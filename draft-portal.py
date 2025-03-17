@@ -54,7 +54,7 @@ if 'df' not in st.session_state:
 
 # Constants
 PICKS_PER_ROUND = len(TEAMS)
-TOTAL_ROUNDS = 10
+TOTAL_ROUNDS = 19
 TOTAL_PICKS = PICKS_PER_ROUND * TOTAL_ROUNDS
 
 def get_round_number(pick_number):
@@ -80,8 +80,25 @@ def get_current_team(pick_number):
     return TEAMS[get_team_index(pick_number)]
 
 def calculate_team_fpts(team_players):
-    """Calculate total FPTS for a team"""
-    return sum(player["FPTS"] for player in team_players)
+    """Calculate total FPTS for a team, with bench players weighted at 50%"""
+    roster = assign_players_to_roster(team_players)
+    total_fpts = 0
+    
+    # Add full FPTS for all non-bench positions
+    for pos, data in roster.items():
+        if pos == "BE":
+            # Add 50% of FPTS for bench players
+            for slot in data:
+                total_fpts += slot["fpts"] * 0.5
+        elif pos in ["P", "OF"]:
+            # Add full FPTS for pitchers and outfielders
+            for slot in data:
+                total_fpts += slot["fpts"]
+        else:
+            # Add full FPTS for all other positions
+            total_fpts += data["fpts"]
+    
+    return total_fpts
 
 def search_players(query, df):
     """Search players with fuzzy matching and sort by highest VORP across all positions"""
@@ -99,8 +116,8 @@ def assign_players_to_roster(team_players):
     # Initialize empty roster with lists for positions that can have multiple players
     roster = {}
     for pos in ROSTER_POSITIONS:
-        if pos in ["P", "BE"]:
-            roster[pos] = [{"player": "", "fpts": 0, "vorp": 0} for _ in range(7 if pos == "P" else 3)]
+        if pos in ["P", "BE", "OF"]:
+            roster[pos] = [{"player": "", "fpts": 0, "vorp": 0} for _ in range(7 if pos == "P" else (3 if pos == "BE" else 3))]
         else:
             roster[pos] = {"player": "", "fpts": 0, "vorp": 0}
 
@@ -121,7 +138,7 @@ def assign_players_to_roster(team_players):
             best_position = "UTIL"
         
         # Handle positions that can have multiple players
-        if best_position in ["P", "BE"]:
+        if best_position in ["P", "BE", "OF"]:
             for i, slot in enumerate(roster[best_position]):
                 if slot["player"] == "":
                     roster[best_position][i] = {
@@ -150,7 +167,7 @@ def assign_players_to_roster(team_players):
                 # Map DH to UTIL for other positions too
                 target_pos = "UTIL" if pos == "DH" else pos
                     
-                if target_pos in ["P", "BE"]:
+                if target_pos in ["P", "BE", "OF"]:
                     for i, slot in enumerate(roster[target_pos]):
                         if slot["player"] == "":
                             roster[target_pos][i] = {
@@ -240,20 +257,25 @@ with tab_draft:
         display_data.append(player_info)
     
     display_df = pd.DataFrame(display_data)
-    selected_indices = st.data_editor(
+    
+    # Use dataframe with row selection
+    event = st.dataframe(
         display_df,
         hide_index=True,
         use_container_width=True,
-        num_rows="dynamic",
-        key="player_table"
+        on_select="rerun",
+        selection_mode="single-row"
     )
 
     draft_complete = st.session_state.current_pick >= TOTAL_PICKS
     if draft_complete:
         st.warning("🎉 Draft Complete! All rounds have been finished.")
     else:
-        if st.button("Draft Selected Player", key="draft_button", disabled=len(selected_indices) == 0):
-            selected_player = available_players.iloc[0]
+        if st.button("Draft Selected Player", key="draft_button") and event.selection.rows:
+            # Get the selected player from the dataframe
+            selected_idx = event.selection.rows[0]
+            selected_player = available_players.iloc[selected_idx]
+            
             player_data = {
                 "Name": selected_player["Name"],
                 "Team": selected_player["Team"],
@@ -281,7 +303,7 @@ with tab_rosters:
             # Convert roster to DataFrame for display
             roster_data = []
             for pos, data in roster.items():
-                if pos in ["P", "BE"]:
+                if pos in ["P", "BE", "OF"]:
                     for i, slot in enumerate(data):
                         roster_data.append({
                             "Position": f"{pos}{i+1}",
@@ -311,14 +333,28 @@ with tab_leaderboard:
         total_fpts = calculate_team_fpts(team_players)
         team_stats.append({
             "Team": team_name,
-            "Total FPTS": f"{total_fpts:.1f}",
+            "Total FPTS": total_fpts,
             "Players Drafted": len(team_players)
         })
     
     # Convert to DataFrame and sort by FPTS
     df_leaderboard = pd.DataFrame(team_stats)
-    df_leaderboard["Total FPTS"] = pd.to_numeric(df_leaderboard["Total FPTS"])
+    
+    # Calculate relative strength
+    league_avg = df_leaderboard["Total FPTS"].mean()
+    df_leaderboard["Relative Strength (%)"] = ((df_leaderboard["Total FPTS"] - league_avg) / league_avg * 100).round(1)
+    
+    # Format Total FPTS for display
+    df_leaderboard["Total FPTS"] = df_leaderboard["Total FPTS"].round(1)
+    
+    # Sort by FPTS
     df_leaderboard = df_leaderboard.sort_values("Total FPTS", ascending=False)
     
     # Display leaderboard
     st.dataframe(df_leaderboard, hide_index=True, use_container_width=True)
+    
+    # Add a note about the relative strength calculation
+    st.markdown("""
+    ---
+    *Note: Relative Strength shows percentage above/below league average. A positive number means your team is that much better than average.*
+    """)
