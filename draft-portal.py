@@ -29,7 +29,26 @@ if 'team_picks' not in st.session_state:
     st.session_state.team_picks = {team: [] for team in TEAMS}  # Store full player details
 if 'df' not in st.session_state:
     file_path = "data/generated/all-positions-fpts.csv"
-    st.session_state.df = pd.read_csv(file_path)
+    raw_df = pd.read_csv(file_path)
+    
+    # Create a dictionary to store player data with multiple positions
+    player_data = {}
+    for _, row in raw_df.iterrows():
+        player_key = f"{row['Name']}_{row['Team']}"
+        if player_key not in player_data:
+            player_data[player_key] = {
+                "Name": row["Name"],
+                "Team": row["Team"],
+                "FPTS": row["FPTS"],
+                "Positions": {},
+                "Max VORP": 0  # Initialize max VORP
+            }
+        player_data[player_key]["Positions"][row["Position"]] = row["VORP"]
+        # Update max VORP if this position's VORP is higher
+        player_data[player_key]["Max VORP"] = max(player_data[player_key]["Max VORP"], row["VORP"])
+    
+    # Convert to DataFrame for display and searching
+    st.session_state.df = pd.DataFrame.from_dict(player_data, orient='index')
     st.session_state.df["Drafted"] = False
     st.session_state.df["cleaned_name"] = st.session_state.df["Name"].apply(lambda x: unidecode(str(x)).lower().strip())
 
@@ -65,15 +84,15 @@ def calculate_team_fpts(team_players):
     return sum(player["FPTS"] for player in team_players)
 
 def search_players(query, df):
-    """Search players with fuzzy matching and sort by VORP"""
+    """Search players with fuzzy matching and sort by highest VORP across all positions"""
     if not query:
-        return df[~df["Drafted"]].sort_values("VORP", ascending=False)
+        return df[~df["Drafted"]].sort_values("Max VORP", ascending=False)
     
     query = unidecode(query).lower().strip()
     matches = process.extract(query, df["cleaned_name"], limit=None, score_cutoff=60)
     matched_indices = [i[2] for i in matches]
-    matched_df = df.iloc[matched_indices]
-    return matched_df[~matched_df["Drafted"]].sort_values("VORP", ascending=False)
+    matched_df = df.loc[matched_indices]
+    return matched_df[~matched_df["Drafted"]].sort_values("Max VORP", ascending=False)
 
 def assign_players_to_roster(team_players):
     """Assign players to roster positions using a greedy algorithm (sorted by FPTS)."""
@@ -88,52 +107,102 @@ def assign_players_to_roster(team_players):
     # Sort players by FPTS in descending order (highest first)
     sorted_players = sorted(team_players, key=lambda p: p["FPTS"], reverse=True)
 
+    # First pass: Try to fill all regular positions
     for player in sorted_players:
         assigned = False
-        pos = player["Position"]
+        # Get all eligible positions for this player
+        eligible_positions = list(player["Positions"].keys())
+        
+        # Try to assign player to their best position first (highest VORP)
+        best_position = max(eligible_positions, key=lambda pos: player["Positions"][pos])
+        
+        # Map DH to UTIL
+        if best_position == "DH":
+            best_position = "UTIL"
         
         # Handle positions that can have multiple players
-        if pos in ["P", "BE"]:
-            for i, slot in enumerate(roster[pos]):
+        if best_position in ["P", "BE"]:
+            for i, slot in enumerate(roster[best_position]):
                 if slot["player"] == "":
-                    roster[pos][i] = {
+                    roster[best_position][i] = {
                         "player": f"{player['Name']} ({player['Team']})",
                         "fpts": player["FPTS"],
-                        "vorp": player["VORP"]
+                        "vorp": player["Positions"][best_position if best_position != "UTIL" else "DH"]
                     }
                     assigned = True
                     break
         # Handle single-player positions
         else:
-            if roster[pos]["player"] == "":
-                roster[pos] = {
+            if roster[best_position]["player"] == "":
+                roster[best_position] = {
                     "player": f"{player['Name']} ({player['Team']})",
                     "fpts": player["FPTS"],
-                    "vorp": player["VORP"]
+                    "vorp": player["Positions"][best_position if best_position != "UTIL" else "DH"]
                 }
                 assigned = True
         
-        # If player wasn't placed in their primary position, try UTIL or Bench
+        # If player wasn't placed in their best position, try other eligible positions
         if not assigned:
-            # Try UTIL first
-            if roster["UTIL"]["player"] == "":
-                roster["UTIL"] = {
-                    "player": f"{player['Name']} ({player['Team']})",
-                    "fpts": player["FPTS"],
-                    "vorp": player["VORP"]
-                }
-                assigned = True
-            # Then try Bench
-            else:
-                for i, slot in enumerate(roster["BE"]):
-                    if slot["player"] == "":
-                        roster["BE"][i] = {
+            for pos in eligible_positions:
+                if pos == best_position:
+                    continue
+                
+                # Map DH to UTIL for other positions too
+                target_pos = "UTIL" if pos == "DH" else pos
+                    
+                if target_pos in ["P", "BE"]:
+                    for i, slot in enumerate(roster[target_pos]):
+                        if slot["player"] == "":
+                            roster[target_pos][i] = {
+                                "player": f"{player['Name']} ({player['Team']})",
+                                "fpts": player["FPTS"],
+                                "vorp": player["Positions"][pos]
+                            }
+                            assigned = True
+                            break
+                else:
+                    if roster[target_pos]["player"] == "":
+                        roster[target_pos] = {
                             "player": f"{player['Name']} ({player['Team']})",
                             "fpts": player["FPTS"],
-                            "vorp": player["VORP"]
+                            "vorp": player["Positions"][pos]
                         }
                         assigned = True
                         break
+        
+        # Mark player as assigned if they were placed anywhere
+        if assigned:
+            player["assigned"] = True
+        else:
+            player["assigned"] = False
+
+    # Second pass: Fill UTIL with best remaining hitter
+    if roster["UTIL"]["player"] == "":
+        remaining_hitters = [p for p in sorted_players if not p["assigned"] and "P" not in p["Positions"]]
+        if remaining_hitters:
+            best_hitter = max(remaining_hitters, key=lambda p: p["FPTS"])
+            roster["UTIL"] = {
+                "player": f"{best_hitter['Name']} ({best_hitter['Team']})",
+                "fpts": best_hitter["FPTS"],
+                "vorp": max(best_hitter["Positions"].values())
+            }
+            best_hitter["assigned"] = True
+
+    # Third pass: Fill bench spots with remaining players
+    remaining_players = [p for p in sorted_players if not p["assigned"]]
+    for player in remaining_players:
+        assigned = False
+        for i, slot in enumerate(roster["BE"]):
+            if slot["player"] == "":
+                roster["BE"][i] = {
+                    "player": f"{player['Name']} ({player['Team']})",
+                    "fpts": player["FPTS"],
+                    "vorp": max(player["Positions"].values())
+                }
+                assigned = True
+                break
+        if assigned:
+            player["assigned"] = True
     
     return roster
 
@@ -157,36 +226,39 @@ with tab_draft:
     search_query = st.text_input("Search Players:", key="player_search")
 
     available_players = search_players(search_query, st.session_state.df)
-
-    # Create a radio selection for players
-    if len(available_players) > 0:
-        player_options = available_players.apply(
-            lambda x: f"{x['Name']} ({x['Team']}) - {x['Position']} - FPTS: {x['FPTS']:.1f}",
-            axis=1
-        ).tolist()
-        
-        selected_player_idx = st.radio(
-            "Select a player to draft:",
-            range(len(available_players)),
-            format_func=lambda x: player_options[x],
-            key="player_selection"
-        )
-    else:
-        st.info("No players available matching your search criteria.")
-        selected_player_idx = None
+    
+    # Create a display DataFrame with position-specific VORP values
+    display_data = []
+    for idx, row in available_players.iterrows():
+        player_info = {
+            "Name": row["Name"],
+            "Team": row["Team"],
+            "FPTS": row["FPTS"],
+            "VORP": f"{row['Max VORP']:.1f}",
+            "Positions": ", ".join(f"{pos} ({vorp:.1f})" for pos, vorp in row["Positions"].items())
+        }
+        display_data.append(player_info)
+    
+    display_df = pd.DataFrame(display_data)
+    selected_indices = st.data_editor(
+        display_df,
+        hide_index=True,
+        use_container_width=True,
+        num_rows="dynamic",
+        key="player_table"
+    )
 
     draft_complete = st.session_state.current_pick >= TOTAL_PICKS
     if draft_complete:
         st.warning("🎉 Draft Complete! All rounds have been finished.")
     else:
-        if st.button("Draft Selected Player", key="draft_button", disabled=selected_player_idx is None):
-            selected_player = available_players.iloc[selected_player_idx]
+        if st.button("Draft Selected Player", key="draft_button", disabled=len(selected_indices) == 0):
+            selected_player = available_players.iloc[0]
             player_data = {
                 "Name": selected_player["Name"],
                 "Team": selected_player["Team"],
-                "Position": selected_player["Position"],
                 "FPTS": selected_player["FPTS"],
-                "VORP": selected_player["VORP"]
+                "Positions": selected_player["Positions"]
             }
             
             st.session_state.df.loc[selected_player.name, "Drafted"] = True
