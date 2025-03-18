@@ -2,21 +2,22 @@ import streamlit as st
 import pandas as pd
 from rapidfuzz import process
 from unidecode import unidecode
+from st_keyup import st_keyup
 
 # Define team names and your team
 TEAMS = [
-    "Shoehei's Interpreter",
-    "C Team",
-    "James's Finest Team",
-    "The Destroyers🔥⚾️",
-    "MD Madness",
-    "Mr Met",
-    "Mark's Monstrous Team",
-    "Breggy Bombs",
-    "Chris's Cool Team",
-    "Matt's Pent Team"
+    "Lauren's Lucrative Team",
+    "Billy's Brilliant Team", 
+    "Andrew's Astounding Team",
+    "Larry's Loud Team",
+    "Steven's Smart Team",
+    "Patrick's Perfect Team",
+    "Dan's Daring Team",
+    "Hari's Heated Team",
+    "Brendan's Best Team",
+    "Justin's Scary Team"
 ]
-YOUR_TEAM = "Shoehei's Interpreter"  # Change this to your team name
+YOUR_TEAM = "Brendan's Best Team"  # Change this to your team name
 
 # Define fixed roster positions
 ROSTER_POSITIONS = ["C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "UTIL", "BE", "BE", "BE",
@@ -223,6 +224,41 @@ def assign_players_to_roster(team_players):
     
     return roster
 
+def can_draft_player(selected_team, player_data):
+    """Check if a player can be drafted based on current roster state"""
+    team_players = st.session_state.team_picks[selected_team]
+    roster = assign_players_to_roster(team_players)
+    
+    # Get all eligible positions for the player
+    eligible_positions = list(player_data["Positions"].keys())
+    
+    # First check primary positions
+    for pos in eligible_positions:
+        # Map DH to UTIL
+        target_pos = "UTIL" if pos == "DH" else pos
+        
+        if target_pos in ["P", "BE", "OF"]:
+            # Check if any slot is open in multi-player positions
+            for slot in roster[target_pos]:
+                if slot["player"] == "":
+                    return True
+        else:
+            # Check if single-player position is open
+            if roster[target_pos]["player"] == "":
+                return True
+    
+    # If no primary positions are open, check UTIL
+    if "DH" in eligible_positions or any(pos not in ["P", "BE", "OF"] for pos in eligible_positions):
+        if roster["UTIL"]["player"] == "":
+            return True
+    
+    # Finally check bench spots
+    for slot in roster["BE"]:
+        if slot["player"] == "":
+            return True
+    
+    return False
+
 # UI Layout
 st.title("⚾️ Fantasy Baseball Draft Tracker")
 
@@ -240,9 +276,8 @@ with tab_draft:
     st.subheader(f"Current Pick: {selected_team}")
 
     st.divider()
-    search_query = st.text_input("Search Players:", key="player_search")
-
-    available_players = search_players(search_query, st.session_state.df)
+    search_query = st_keyup("Search Players:", debounce=300, key="player_search")
+    available_players = search_players(search_query or "", st.session_state.df)
     
     # Create a display DataFrame with position-specific VORP values
     display_data = []
@@ -283,10 +318,14 @@ with tab_draft:
                 "Positions": selected_player["Positions"]
             }
             
-            st.session_state.df.loc[selected_player.name, "Drafted"] = True
-            st.session_state.team_picks[selected_team].append(player_data)
-            st.session_state.current_pick += 1
-            st.rerun()
+            # Check if player can be drafted
+            if can_draft_player(selected_team, player_data):
+                st.session_state.df.loc[selected_player.name, "Drafted"] = True
+                st.session_state.team_picks[selected_team].append(player_data)
+                st.session_state.current_pick += 1
+                st.rerun()
+            else:
+                st.error(f"Cannot draft {player_data['Name']}. No eligible positions available in current roster.")
 
 with tab_rosters:
     st.header("Team Rosters")
@@ -352,9 +391,3 @@ with tab_leaderboard:
     
     # Display leaderboard
     st.dataframe(df_leaderboard, hide_index=True, use_container_width=True)
-    
-    # Add a note about the relative strength calculation
-    st.markdown("""
-    ---
-    *Note: Relative Strength shows percentage above/below league average. A positive number means your team is that much better than average.*
-    """)
