@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from rapidfuzz import process
 from unidecode import unidecode
 from st_keyup import st_keyup
@@ -55,6 +56,66 @@ if 'df' not in st.session_state:
     st.session_state.df = pd.DataFrame.from_dict(player_data, orient='index')
     st.session_state.df["Drafted"] = False
     st.session_state.df["cleaned_name"] = st.session_state.df["Name"].apply(lambda x: unidecode(str(x)).lower().strip())
+
+# Add caching for rosters and position stats
+if 'cached_rosters' not in st.session_state:
+    st.session_state.cached_rosters = {}
+if 'cached_position_stats' not in st.session_state:
+    st.session_state.cached_position_stats = {}
+if 'last_roster_update' not in st.session_state:
+    st.session_state.last_roster_update = -1  # Track when rosters were last updated
+
+def get_cached_roster(team_name):
+    """Get cached roster for a team, computing it if necessary"""
+    if (team_name not in st.session_state.cached_rosters or 
+        st.session_state.last_roster_update != st.session_state.current_pick):
+        st.session_state.cached_rosters[team_name] = assign_players_to_roster(st.session_state.team_picks[team_name])
+    return st.session_state.cached_rosters[team_name]
+
+def precompute_position_stats(df):
+    """Precompute position-specific statistics for URG calculations"""
+    current_pick = st.session_state.current_pick
+    if current_pick in st.session_state.cached_position_stats:
+        return st.session_state.cached_position_stats[current_pick]
+
+    stats = {}
+    # Count all players per position, not just positive VORP ones
+    for _, row in df[~df["Drafted"]].iterrows():
+        for pos, vorp in row["Positions"].items():
+            if pos not in stats:
+                stats[pos] = {
+                    "count": 0,
+                    "vorp_values": [],
+                    "teams_needing": 0
+                }
+            stats[pos]["count"] += 1
+            stats[pos]["vorp_values"].append(vorp)
+    
+    # Calculate teams needing each position
+    for team in TEAMS:
+        roster = get_cached_roster(team)
+        for pos, data in roster.items():
+            if pos in ["P", "BE", "OF"]:
+                if any(slot["player"] == "" for slot in data):
+                    for p in ["P"] if pos == "P" else ["OF"] if pos == "OF" else []:
+                        if p in stats:
+                            stats[p]["teams_needing"] += 1
+            else:
+                if data["player"] == "":
+                    if pos in stats:
+                        stats[pos]["teams_needing"] += 1
+    
+    # Calculate VORP metrics and sort VORP values
+    for pos in stats:
+        if stats[pos]["vorp_values"]:
+            stats[pos]["vorp_values"].sort(reverse=True)  # Sort in descending order for easier next-best lookup
+            stats[pos]["vorp_avg"] = np.mean(stats[pos]["vorp_values"])
+            stats[pos]["vorp_best"] = max(stats[pos]["vorp_values"])
+            # Count quality players (positive VORP) for scarcity calculations
+            stats[pos]["quality_count"] = sum(1 for v in stats[pos]["vorp_values"] if v > 0)
+    
+    st.session_state.cached_position_stats[current_pick] = stats
+    return stats
 
 # Constants
 PICKS_PER_ROUND = len(TEAMS)
@@ -289,9 +350,8 @@ def assign_players_to_roster(team_players):
     return roster
 
 def can_draft_player(selected_team, player_data):
-    """Check if a player can be drafted based on current roster state"""
-    team_players = st.session_state.team_picks[selected_team]
-    roster = assign_players_to_roster(team_players)
+    """Check if a player can be drafted based on current roster state using cached roster"""
+    roster = get_cached_roster(selected_team)
     
     # Get all eligible positions for the player
     eligible_positions = list(player_data["Positions"].keys())
@@ -302,93 +362,94 @@ def can_draft_player(selected_team, player_data):
         target_pos = "UTIL" if pos == "DH" else pos
         
         if target_pos in ["P", "BE", "OF"]:
-            # Check if any slot is open in multi-player positions
-            for slot in roster[target_pos]:
-                if slot["player"] == "":
-                    return True
+            # Use any() for efficient checking of multi-player positions
+            if any(slot["player"] == "" for slot in roster[target_pos]):
+                return True
         else:
-            # Check if single-player position is open
+            # Direct check for single-player positions
             if roster[target_pos]["player"] == "":
                 return True
     
-    # If no primary positions are open, check UTIL
+    # If no primary positions are open, check UTIL for non-pitchers
     if "DH" in eligible_positions or any(pos not in ["P", "BE", "OF"] for pos in eligible_positions):
         if roster["UTIL"]["player"] == "":
             return True
     
     # Finally check bench spots
-    for slot in roster["BE"]:
-        if slot["player"] == "":
-            return True
+    if any(slot["player"] == "" for slot in roster["BE"]):
+        return True
     
     return False
 
 def calculate_urg(selected_team, player_data, df):
-    """Calculate Urgency Score (URG) for a player's position based on:
-    - Number of slots needed to fill at each position
-    - Number of quality players remaining at each position
-    - Number of teams still needing players at each position
-    - VORP metrics of remaining players"""
-    team_players = st.session_state.team_picks[selected_team]
-    roster = assign_players_to_roster(team_players)
+    """Calculate Urgency Score (URG) for a player based on positional need, market demand, and value over next available.
     
-    # Get all eligible positions for the player
-    eligible_positions = list(player_data["Positions"].keys())
+    URG = (PNF × MDF) × VONA
+    where:
+    - PNF (Positional Need Factor) = Open slots for position / Quality players left
+    - MDF (Market Demand Factor) = Teams needing position / Quality players left (capped at 3.0)
+    - VONA (Value Over Next Available) = Current player's points - Next best available player's points
+    """
+    # Get precomputed position stats
+    position_stats = precompute_position_stats(df)
+    roster = get_cached_roster(selected_team)
     
     # Calculate URG for each position and take the maximum
     max_urg = 0
-    for pos in eligible_positions:
-        # Map DH to UTIL
+    for pos in player_data["Positions"]:
+        if pos not in position_stats:
+            continue
+            
+        # Map DH to UTIL for position checking
         target_pos = "UTIL" if pos == "DH" else pos
         
-        # Calculate P_needed (slots we need to fill)
-        p_needed = 0
+        # Calculate open slots (p_needed)
         if target_pos in ["P", "BE", "OF"]:
-            for slot in roster[target_pos]:
-                if slot["player"] == "":
-                    p_needed += 1
+            open_slots = sum(1 for slot in roster[target_pos] if slot["player"] == "")
         else:
-            if roster[target_pos]["player"] == "":
-                p_needed = 1
+            open_slots = 1 if roster[target_pos]["player"] == "" else 0
         
-        if p_needed == 0:
+        if open_slots == 0:
             continue
             
-        # Calculate P_remaining (quality players left)
-        # Consider players with VORP > 0 as quality players
-        remaining_players = df[~df["Drafted"] & df["Positions"].apply(lambda x: pos in x)]
-        p_remaining = len(remaining_players)
+        stats = position_stats[pos]
         
-        if p_remaining == 0:
+        # Ensure we have players left at this position
+        if not stats["vorp_values"]:
             continue
             
-        # Calculate T_needed (teams needing this position)
-        t_needed = 0
-        for team in TEAMS:
-            team_roster = assign_players_to_roster(st.session_state.team_picks[team])
-            if target_pos in ["P", "BE", "OF"]:
-                for slot in team_roster[target_pos]:
-                    if slot["player"] == "":
-                        t_needed += 1
-                        break
-            else:
-                if team_roster[target_pos]["player"] == "":
-                    t_needed += 1
+        # Use quality_count for scarcity, but ensure it's at least 1 to avoid division by zero
+        quality_players_left = max(stats["quality_count"], 1)
         
-        # Calculate VORP metrics
-        vorp_values = []
-        for _, row in remaining_players.iterrows():
-            if pos in row["Positions"]:
-                vorp_values.append(row["Positions"][pos])
+        # Ensure teams_needing is non-negative
+        teams_needing = max(stats["teams_needing"], 0)
         
-        if not vorp_values:
-            continue
-            
-        vorp_avg = sum(vorp_values) / len(vorp_values)
-        vorp_best = max(vorp_values)
+        # Calculate PNF (Positional Need Factor)
+        # quality_players_left is guaranteed to be at least 1
+        pnf = open_slots / quality_players_left
+        
+        # Calculate MDF (Market Demand Factor), capped at 3.0
+        # quality_players_left is guaranteed to be at least 1
+        mdf = min(teams_needing / quality_players_left, 3.0)
+        
+        # Calculate VONA (Value Over Next Available)
+        current_vorp = player_data["Positions"][pos]
+        
+        # Find next best VORP by looking through sorted list
+        vorp_values = stats["vorp_values"]
+        next_best_vorp = current_vorp  # Default to current_vorp if no next best found
+        for vorp in vorp_values:
+            if vorp < current_vorp:
+                next_best_vorp = vorp
+                break
+        
+        vona = current_vorp - next_best_vorp
+        
+        # Apply the 1.2x weight to VONA to prioritize player value
+        weighted_vona = vona * 1.2
         
         # Calculate URG
-        urg = (p_needed / p_remaining) * (t_needed / len(TEAMS)) * (vorp_best / vorp_avg)
+        urg = (pnf * mdf) * weighted_vona
         max_urg = max(max_urg, urg)
     
     return max_urg
@@ -419,16 +480,20 @@ with tab_draft:
         player_info = {
             "Name": row["Name"],
             "Team": row["Team"],
-            "VORP": f"{row['Max VORP']:.1f}",
-            "URG": f"{calculate_urg(selected_team, row, st.session_state.df):.2f}",
+            "VORP": row['Max VORP'],  # Store as number for sorting
+            "URG": calculate_urg(selected_team, row, st.session_state.df),  # Store as number for sorting
             "Positions": ", ".join(f"{pos} ({vorp:.1f})" for pos, vorp in row["Positions"].items())
         }
         display_data.append(player_info)
     
     display_df = pd.DataFrame(display_data)
     
-    # Sort by URG in descending order
-    display_df = display_df.sort_values("URG", ascending=False)
+    # Sort by VORP first, then URG as a tiebreaker
+    display_df = display_df.sort_values(["VORP", "URG"], ascending=[False, False])
+    
+    # Format VORP and URG for display after sorting
+    display_df["VORP"] = display_df["VORP"].apply(lambda x: f"{x:.1f}")
+    display_df["URG"] = display_df["URG"].apply(lambda x: f"{x:.2f}")
     
     # Use dataframe with row selection
     event = st.dataframe(
@@ -457,8 +522,16 @@ with tab_draft:
             
             # Check if player can be drafted
             if can_draft_player(selected_team, player_data):
+                # Mark player as drafted
                 st.session_state.df.loc[selected_player.name, "Drafted"] = True
                 st.session_state.team_picks[selected_team].append(player_data)
+                
+                # Clear caches since roster has changed
+                st.session_state.cached_rosters = {}
+                st.session_state.cached_position_stats = {}
+                st.session_state.last_roster_update = st.session_state.current_pick
+                
+                # Increment pick
                 st.session_state.current_pick += 1
                 st.rerun()
             else:
@@ -472,9 +545,7 @@ with tab_rosters:
     for idx, team_tab in enumerate(team_tabs):
         with team_tab:
             team_name = TEAMS[idx]
-            team_players = st.session_state.team_picks[team_name]
-
-            roster = assign_players_to_roster(team_players)
+            roster = get_cached_roster(team_name)
 
             # Convert roster to DataFrame for display
             roster_data = []
