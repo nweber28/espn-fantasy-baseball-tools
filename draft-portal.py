@@ -323,6 +323,76 @@ def can_draft_player(selected_team, player_data):
     
     return False
 
+def calculate_urg(selected_team, player_data, df):
+    """Calculate Urgency Score (URG) for a player's position based on:
+    - Number of slots needed to fill at each position
+    - Number of quality players remaining at each position
+    - Number of teams still needing players at each position
+    - VORP metrics of remaining players"""
+    team_players = st.session_state.team_picks[selected_team]
+    roster = assign_players_to_roster(team_players)
+    
+    # Get all eligible positions for the player
+    eligible_positions = list(player_data["Positions"].keys())
+    
+    # Calculate URG for each position and take the maximum
+    max_urg = 0
+    for pos in eligible_positions:
+        # Map DH to UTIL
+        target_pos = "UTIL" if pos == "DH" else pos
+        
+        # Calculate P_needed (slots we need to fill)
+        p_needed = 0
+        if target_pos in ["P", "BE", "OF"]:
+            for slot in roster[target_pos]:
+                if slot["player"] == "":
+                    p_needed += 1
+        else:
+            if roster[target_pos]["player"] == "":
+                p_needed = 1
+        
+        if p_needed == 0:
+            continue
+            
+        # Calculate P_remaining (quality players left)
+        # Consider players with VORP > 0 as quality players
+        remaining_players = df[~df["Drafted"] & df["Positions"].apply(lambda x: pos in x)]
+        p_remaining = len(remaining_players)
+        
+        if p_remaining == 0:
+            continue
+            
+        # Calculate T_needed (teams needing this position)
+        t_needed = 0
+        for team in TEAMS:
+            team_roster = assign_players_to_roster(st.session_state.team_picks[team])
+            if target_pos in ["P", "BE", "OF"]:
+                for slot in team_roster[target_pos]:
+                    if slot["player"] == "":
+                        t_needed += 1
+                        break
+            else:
+                if team_roster[target_pos]["player"] == "":
+                    t_needed += 1
+        
+        # Calculate VORP metrics
+        vorp_values = []
+        for _, row in remaining_players.iterrows():
+            if pos in row["Positions"]:
+                vorp_values.append(row["Positions"][pos])
+        
+        if not vorp_values:
+            continue
+            
+        vorp_avg = sum(vorp_values) / len(vorp_values)
+        vorp_best = max(vorp_values)
+        
+        # Calculate URG
+        urg = (p_needed / p_remaining) * (t_needed / len(TEAMS)) * (vorp_best / vorp_avg)
+        max_urg = max(max_urg, urg)
+    
+    return max_urg
+
 # UI Layout
 st.title("⚾️ Fantasy Baseball Draft Tracker")
 
@@ -343,19 +413,22 @@ with tab_draft:
     search_query = st_keyup("Search Players:", key="player_search")
     available_players = search_players(search_query or "", st.session_state.df, st.session_state.team_picks[selected_team])
     
-    # Create a display DataFrame with position-specific VORP values
+    # Create a display DataFrame with position-specific VORP values and URG
     display_data = []
     for idx, row in available_players.iterrows():
         player_info = {
             "Name": row["Name"],
             "Team": row["Team"],
-            "FPTS": row["FPTS"],
             "VORP": f"{row['Max VORP']:.1f}",
+            "URG": f"{calculate_urg(selected_team, row, st.session_state.df):.2f}",
             "Positions": ", ".join(f"{pos} ({vorp:.1f})" for pos, vorp in row["Positions"].items())
         }
         display_data.append(player_info)
     
     display_df = pd.DataFrame(display_data)
+    
+    # Sort by URG in descending order
+    display_df = display_df.sort_values("URG", ascending=False)
     
     # Use dataframe with row selection
     event = st.dataframe(
