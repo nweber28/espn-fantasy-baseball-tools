@@ -32,6 +32,9 @@ if 'df' not in st.session_state:
     file_path = "data/generated/all-positions-fpts.csv"
     raw_df = pd.read_csv(file_path)
     
+    # Sort by FPTS and take top 1500 players
+    raw_df = raw_df.sort_values('FPTS', ascending=False).head(1500)
+    
     # Create a dictionary to store player data with multiple positions
     player_data = {}
     for _, row in raw_df.iterrows():
@@ -101,16 +104,77 @@ def calculate_team_fpts(team_players):
     
     return total_fpts
 
-def search_players(query, df):
+def get_available_positions(team_players):
+    """Get a list of positions that are still available for a team"""
+    roster = assign_players_to_roster(team_players)
+    available_positions = []
+    
+    for pos, data in roster.items():
+        if pos in ["P", "BE", "OF"]:
+            # Check each slot in multi-player positions
+            for i, slot in enumerate(data):
+                if slot["player"] == "":
+                    available_positions.append(pos)
+        else:
+            # Check single-player positions
+            if data["player"] == "":
+                available_positions.append(pos)
+    
+    return available_positions
+
+def search_players(query, df, team_players):
     """Search players with fuzzy matching and sort by highest VORP across all positions"""
+    # Get available positions for the team
+    available_positions = get_available_positions(team_players)
+    
+    # Count current pitchers
+    current_pitchers = sum(1 for player in team_players if "P" in player["Positions"])
+    
+    # Check if we need pitchers
+    need_pitchers = current_pitchers < 7
+    
+    # Check if we have bench spots available
+    has_bench_spots = "BE" in available_positions
+    
     if not query:
-        return df[~df["Drafted"]].sort_values("Max VORP", ascending=False)
+        # Filter players who can fill any available position
+        eligible_players = df[~df["Drafted"]].copy()
+        
+        # Determine if a player is eligible based on position and roster needs
+        eligible_players["can_fill_position"] = eligible_players["Positions"].apply(
+            lambda x: (
+                # If we need pitchers, any pitcher is eligible
+                (need_pitchers and "P" in x) or
+                # If we have bench spots, any non-pitcher is eligible
+                (has_bench_spots and "P" not in x) or
+                # Otherwise, check if they can fill any available position
+                any(pos in available_positions or (pos == "DH" and "UTIL" in available_positions) 
+                    for pos in x.keys())
+            )
+        )
+        
+        # Only show players who can fill an available position
+        return eligible_players[eligible_players["can_fill_position"]].sort_values("Max VORP", ascending=False)
     
     query = unidecode(query).lower().strip()
     matches = process.extract(query, df["cleaned_name"], limit=None, score_cutoff=60)
     matched_indices = [i[2] for i in matches]
     matched_df = df.loc[matched_indices]
-    return matched_df[~matched_df["Drafted"]].sort_values("Max VORP", ascending=False)
+    
+    # Filter matched players who can fill any available position
+    matched_df["can_fill_position"] = matched_df["Positions"].apply(
+        lambda x: (
+            # If we need pitchers, any pitcher is eligible
+            (need_pitchers and "P" in x) or
+            # If we have bench spots, any non-pitcher is eligible
+            (has_bench_spots and "P" not in x) or
+            # Otherwise, check if they can fill any available position
+            any(pos in available_positions or (pos == "DH" and "UTIL" in available_positions) 
+                for pos in x.keys())
+        )
+    )
+    
+    return matched_df[matched_df["can_fill_position"] & ~matched_df["Drafted"]].sort_values("Max VORP", ascending=False)
 
 def assign_players_to_roster(team_players):
     """Assign players to roster positions using a greedy algorithm (sorted by FPTS)."""
@@ -276,8 +340,8 @@ with tab_draft:
     st.subheader(f"Current Pick: {selected_team}")
 
     st.divider()
-    search_query = st_keyup("Search Players:", debounce=300, key="player_search")
-    available_players = search_players(search_query or "", st.session_state.df)
+    search_query = st_keyup("Search Players:", key="player_search")
+    available_players = search_players(search_query or "", st.session_state.df, st.session_state.team_picks[selected_team])
     
     # Create a display DataFrame with position-specific VORP values
     display_data = []
