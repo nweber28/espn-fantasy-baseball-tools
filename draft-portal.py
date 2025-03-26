@@ -7,18 +7,18 @@ from st_keyup import st_keyup
 
 # Define team names and your team
 TEAMS = [
-    "Lauren's Lucrative Team",
-    "Billy's Brilliant Team", 
+    "Tyler's talentless team",
+    "Ismael's Impressive Team",
+    "Nick's Nasty Team",
+    "Greg's Great Team", 
+    "Brian's Best Team",
     "Andrew's Astounding Team",
-    "Larry's Loud Team",
-    "Steven's Smart Team",
-    "Patrick's Perfect Team",
-    "Dan's Daring Team",
-    "Hari's Heated Team",
-    "Brendan's Best Team",
-    "Justin's Scary Team"
+    "D Team",
+    "BatmanFL",
+    "Micah's Magnificent Team",
+    "Sacamatracas"
 ]
-YOUR_TEAM = "Brendan's Best Team"  # Change this to your team name
+YOUR_TEAM = "D Team"  # Change this to your team name
 
 # Define fixed roster positions
 ROSTER_POSITIONS = ["C", "1B", "2B", "3B", "SS", "OF", "OF", "OF", "UTIL", "BE", "BE", "BE",
