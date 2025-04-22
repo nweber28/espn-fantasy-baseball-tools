@@ -418,7 +418,6 @@ if espn_data:
                     team_rosters, player_team_map = process_team_rosters(roster_data, teams_data, espn_df)
                     
                     if team_rosters:
-                        st.success(f"Successfully loaded {len(team_rosters)} teams from your league")
                         logger.info(f"Successfully processed {len(team_rosters)} teams with {len(player_team_map)} players")
                     else:
                         st.error("Failed to process team rosters. Check your league ID and try again.")
@@ -458,12 +457,83 @@ if espn_data:
     simplified_df = simplified_df.sort_values('Projected Points', ascending=False, na_position='last').reset_index(drop=True)
     logger.info(f"Final dataframe has {len(simplified_df)} rows")
     
-    # Display the simplified DataFrame
-    st.title("Player Analysis")
+    # Get all available team abbreviations
+    available_teams = sorted([team for team in simplified_df['Team'].dropna().unique() if isinstance(team, str) and team.strip()])
     
-    # Show debug info if requested
+    # Display roster section if teams are available
+    if available_teams:
+        st.header("🏆 Team Roster")
+        
+        # Team abbreviation filter
+        selected_team = st.selectbox(
+            "Select Team:", 
+            options=available_teams,
+            index=0 if available_teams else None,
+            help="Filter roster by team abbreviation"
+        )
+        
+        # Filter for selected team
+        if selected_team:
+            team_roster_df = simplified_df[simplified_df['Team'] == selected_team].copy()
+            
+            if not team_roster_df.empty:
+                # Sort by projected points and position
+                team_roster_df = team_roster_df.sort_values(['Projected Points'], ascending=[False]).reset_index(drop=True)
+                
+                # Display team roster table
+                st.subheader(f"{selected_team} Roster")
+                
+                # Create a view without Percent Owned and Team columns
+                roster_display_df = team_roster_df[['Name', 'Eligible Positions', 'Projected Points']].copy()
+                
+                st.dataframe(
+                    roster_display_df, 
+                    use_container_width=True,
+                    column_config={
+                        "Name": st.column_config.TextColumn("Name"),
+                        "Eligible Positions": st.column_config.TextColumn("Positions"),
+                        "Projected Points": st.column_config.NumberColumn("Proj. Points", format="%.1f"),
+                    }
+                )
+                
+                # Calculate team stats
+                total_players = len(team_roster_df)
+                total_points = team_roster_df['Projected Points'].sum()
+                avg_points = team_roster_df['Projected Points'].mean()
+                
+                # Display team stats in columns
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Players", f"{total_players}")
+                with col2:
+                    st.metric("Total Projected Points", f"{total_points:.1f}")
+                with col3:
+                    st.metric("Avg. Proj. Points/Player", f"{avg_points:.1f}")
+            else:
+                st.info(f"No players found for team {selected_team}")
+    
+    # Free Agent Pool section
+    st.header("🏄‍♂️ Free Agent Pool")
+    free_agents_df = simplified_df[simplified_df['Team'].isna() | (simplified_df['Team'] == "")].copy()
+    
+    if not free_agents_df.empty:
+        st.dataframe(
+            free_agents_df, 
+            use_container_width=True,
+            column_config={
+                "Name": st.column_config.TextColumn("Name"),
+                "Percent Owned": st.column_config.NumberColumn("% Owned", format="%.2f"),
+                "Eligible Positions": st.column_config.TextColumn("Positions"),
+                "Projected Points": st.column_config.NumberColumn("Proj. Points", format="%.1f"),
+            }
+        )
+        st.write(f"*\*Showing {len(free_agents_df)} free agents with at least 0.05% ownership*")
+    else:
+        st.info("No free agents found. Check your league ID and make sure rosters are properly loaded.")
+    
+    # Display the debug info
     if show_debug:
-        st.subheader("Debug Information")
+        st.header("🐞 Debug Information")
         st.write(f"League ID: {league_id}")
         st.write(f"Total ESPN Players: {len(espn_df)}")
         st.write(f"FanGraphs Batters: {len(fg_batters_df)}")
@@ -474,33 +544,6 @@ if espn_data:
         if team_rosters:
             st.write(f"Teams Found: {len(team_rosters)}")
             for team_id, team_data in team_rosters.items():
-                st.write(f"- {team_data['name']}: {len(team_data['players'])} players")
-    
-    # Display the dataframe
-    try:
-        st.dataframe(
-            simplified_df, 
-            use_container_width=True,
-            column_config={
-                "Name": st.column_config.TextColumn("Name"),
-                "Percent Owned": st.column_config.NumberColumn("% Owned", format="%.2f"),
-                "Eligible Positions": st.column_config.TextColumn("Positions"),
-                "Projected Points": st.column_config.NumberColumn("Proj. Points", format="%.1f"),
-                "Team": st.column_config.TextColumn("Team")
-            }
-        )
-    except Exception as e:
-        logger.error(f"Error displaying dataframe: {e}")
-        st.error(f"Error displaying player data: {e}")
-        
-        # Display dataframe column info for debugging
-        st.warning("Debug: Dataframe Column Types")
-        st.write(simplified_df.dtypes)
-        
-        # Try alternative display method
-        st.warning("Attempting alternative display method")
-        st.write(simplified_df)
-    
-    st.write(f"*\*Showing players with at least 0.05% ownership*")
+                st.write(f"- {team_data['abbrev']}: {len(team_data['players'])} players")
 else:
     st.error("Failed to fetch player data. Please try again later.")
