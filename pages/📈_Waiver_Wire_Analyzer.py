@@ -621,6 +621,140 @@ if espn_data:
                                            if position != "BN" for player in players)
                 
                 st.metric("Total Projected Points (Starting Lineup)", f"{total_projected_points:.1f}")
+                
+                # Free Agent Optimizer section
+                st.write("### 🚀 Recommended Free Agent Pickups")
+                
+                # Get free agents
+                free_agents = simplified_df[(simplified_df['Team'].isna()) | (simplified_df['Team'] == "")].copy()
+                
+                if not free_agents.empty:
+                    with st.spinner("Analyzing free agent pool for possible improvements..."):
+                        # Process free agents to match team roster format
+                        processed_free_agents = []
+                        for _, player in free_agents.iterrows():
+                            # Split the positions string into a list
+                            positions = [pos.strip() for pos in player['Eligible Positions'].split(',') if pos.strip()]
+                            
+                            # Determine player type (hitter or pitcher)
+                            is_pitcher = any(pos in ["SP", "RP", "P"] for pos in positions)
+                            is_hitter = any(pos in ["C", "1B", "2B", "3B", "SS", "OF", "DH"] for pos in positions)
+                            
+                            processed_free_agents.append({
+                                'name': player['Name'],
+                                'positions': positions,
+                                'projected_points': player['Projected Points'] if not pd.isna(player['Projected Points']) else 0,
+                                'is_pitcher': is_pitcher,
+                                'is_hitter': is_hitter,
+                                'percent_owned': player['Percent Owned']
+                            })
+                        
+                        # Combine team roster with free agents
+                        combined_roster = processed_roster + processed_free_agents
+                        
+                        # Save original optimal lineup for comparison
+                        original_starters = set()
+                        for position, players in optimized_roster.items():
+                            if position != "BN":
+                                for player in players:
+                                    original_starters.add(player['name'])
+                        
+                        # Run optimization with combined roster
+                        optimized_combined = optimize_roster(combined_roster, roster_slots)
+                        
+                        # Identify free agents who made it into the starting lineup
+                        recommended_pickups = []
+                        
+                        # Get new starters
+                        new_starters = set()
+                        new_starter_details = {}
+                        for position, players in optimized_combined.items():
+                            if position != "BN":
+                                for player in players:
+                                    new_starters.add(player['name'])
+                                    new_starter_details[player['name']] = {
+                                        'position': position,
+                                        'projected_points': player['projected_points']
+                                    }
+                        
+                        # Find free agents who made it into starting lineup
+                        free_agent_names = {player['name'] for player in processed_free_agents}
+                        recommended_free_agents = new_starters.intersection(free_agent_names)
+                        
+                        # Identify who they would replace
+                        replaced_players = original_starters - new_starters
+                        
+                        # Create recommendations with details
+                        for fa_name in recommended_free_agents:
+                            # Find the free agent in the processed free agents list
+                            fa = next((p for p in processed_free_agents if p['name'] == fa_name), None)
+                            
+                            if fa:
+                                # Find position they'd play
+                                position = new_starter_details[fa_name]['position']
+                                
+                                # Find who they replace (player at same position not in new lineup)
+                                potential_replacements = []
+                                for original_player in processed_roster:
+                                    # Check if the player is not in the new starters
+                                    if original_player['name'] not in new_starters:
+                                        # Check if they can play the same position
+                                        if position in original_player['positions'] or \
+                                           (position == "UTIL" and original_player['is_hitter']) or \
+                                           (position == "P" and original_player['is_pitcher']):
+                                            potential_replacements.append({
+                                                'name': original_player['name'],
+                                                'projected_points': original_player['projected_points']
+                                            })
+                                
+                                # Sort by projected points to find the most likely replacement
+                                if potential_replacements:
+                                    potential_replacements.sort(key=lambda p: p['projected_points'], reverse=True)
+                                    replaced_player = potential_replacements[0]
+                                    
+                                    # Calculate projected points improvement
+                                    improvement = fa['projected_points'] - replaced_player['projected_points']
+                                    
+                                    if improvement > 0:
+                                        recommended_pickups.append({
+                                            'Add': fa_name,
+                                            'Position': position,
+                                            'Drop': replaced_player['name'],
+                                            'Proj. Points Improvement': improvement,
+                                            'FA Percent Owned': fa['percent_owned']
+                                        })
+                        
+                        # Sort recommendations by projected points improvement
+                        recommended_pickups.sort(key=lambda r: r['Proj. Points Improvement'], reverse=True)
+                        
+                        # Display recommendations
+                        if recommended_pickups:
+                            # Create DataFrame for display
+                            recommendations_df = pd.DataFrame(recommended_pickups)
+                            
+                            # Add a plus sign to positive values for display
+                            recommendations_df['Display Improvement'] = recommendations_df['Proj. Points Improvement'].apply(
+                                lambda x: f"+{x:.1f}" if x > 0 else f"{x:.1f}"
+                            )
+                            
+                            # Remove the original numeric column and keep only the display version
+                            recommendations_df = recommendations_df.drop(columns=['Proj. Points Improvement'])
+                            
+                            st.dataframe(
+                                recommendations_df,
+                                use_container_width=True,
+                                column_config={
+                                    "Add": st.column_config.TextColumn("Add Player"),
+                                    "Position": st.column_config.TextColumn("Position"),
+                                    "Drop": st.column_config.TextColumn("Drop Player"),
+                                    "Display Improvement": st.column_config.TextColumn("Pts Improvement"),
+                                    "FA Percent Owned": st.column_config.NumberColumn("% Owned", format="%.2f")
+                                }
+                            )
+                        else:
+                            st.info("No recommended free agent pickups found to improve your roster.")
+                else:
+                    st.info("No free agents available to analyze.")
             else:
                 st.info(f"No players found for team {selected_team}")
         else:
@@ -633,6 +767,9 @@ if espn_data:
     free_agents_df = simplified_df[simplified_df['Team'].isna() | (simplified_df['Team'] == "")].copy()
     
     if not free_agents_df.empty:
+        # Drop the Team column since it's not needed for free agents
+        free_agents_df = free_agents_df.drop(columns=['Team'])
+        
         st.dataframe(
             free_agents_df, 
             use_container_width=True,

@@ -10,7 +10,11 @@ from unidecode import unidecode
 import nltk
 
 # --- Streamlit Configuration ---
-st.set_page_config(page_title="Pitcher Streaming", page_icon="🚰")
+st.set_page_config(
+    page_title="Pitcher Streaming",
+    page_icon="🚰",
+    layout="wide"
+)
 
 # --- Setup ---
 nltk.download('punkt', quiet=True)
