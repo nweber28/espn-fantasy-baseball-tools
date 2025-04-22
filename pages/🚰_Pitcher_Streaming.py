@@ -2,13 +2,15 @@ import streamlit as st
 import pandas as pd
 import requests
 import logging
-import os
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 import pytz
 from nltk.stem import SnowballStemmer
 from unidecode import unidecode
 import nltk
+
+# --- Streamlit Configuration ---
+st.set_page_config(page_title="Pitcher Streaming", page_icon="🚰")
 
 # --- Setup ---
 nltk.download('punkt', quiet=True)
@@ -41,12 +43,6 @@ TEAM_IDS = {
     'MIL': 23, 'WSN': 24, 'NYM': 25, 'PHI': 26, 'PIT': 27, 'STL': 28, 'SDP': 29,
     'SFG': 30
 }
-
-# --- Streamlit Config ---
-st.set_page_config(page_title="Fantasy Baseball Analysis", page_icon="⚾", layout="wide")
-st.title("Fantasy Baseball Analysis")
-st.markdown("This application helps you analyze pitchers for fantasy baseball using ATC Rest-Of-Season projections.")
-os.makedirs("data/cache", exist_ok=True)
 
 # --- Utility Functions ---
 def safe_get(url: str) -> Optional[Dict[str, Any]]:
@@ -224,127 +220,126 @@ def process_schedule(schedule: Dict[str, Any], pitchers: pd.DataFrame, batting: 
     df['StrengthDiff'] = df['PitcherProjPts'] - df['OppBattingAvg']
     return df
 
-# --- Main Streamlit App ---
-def main():
-    with st.spinner('Loading pitcher projections...'):
-        pitcher_df = fetch_projections('pitcher')
+# --- Main Page Content ---
+st.title("Pitcher Streaming Analysis")
+st.markdown("This page helps you analyze pitchers for fantasy baseball using ATC Rest-Of-Season projections.")
+
+with st.spinner('Loading pitcher projections...'):
+    pitcher_df = fetch_projections('pitcher')
+
+with st.spinner('Loading batter projections...'):
+    batter_df = fetch_projections('batter')
+
+with st.spinner('Analyzing team batting...'):
+    team_batting = analyze_team_batting(batter_df).set_index('Team')
+
+est_now = datetime.now(EST)
+monday = est_now - timedelta(days=est_now.weekday())
+monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
+dates = [(monday + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
+
+st.header("🎯 Top Streaming Picks This Week")
+all_games = []
+
+with st.spinner('Processing schedule data...'):
+    for date in dates:
+        sched = fetch_schedule(date)
+        games = process_schedule(sched, pitcher_df, team_batting)
+        if not games.empty:
+            games['Date'] = date
+            all_games.append(games)
+
+if all_games:
+    weekly = pd.concat(all_games)
+    weekly = weekly[weekly['Pitcher'] != 'TBD']
+    weekly['Team'] = weekly['Matchup'].apply(lambda x: x.split()[0])
+    weekly['Opponent'] = weekly['Matchup'].apply(lambda x: x.split()[-1])
     
-    with st.spinner('Loading batter projections...'):
-        batter_df = fetch_projections('batter')
+    summary = weekly[['Date', 'Pitcher', 'Team', 'Opponent', 'StrengthDiff']]
+    summary = summary.sort_values('StrengthDiff', ascending=False)
     
-    with st.spinner('Analyzing team batting...'):
-        team_batting = analyze_team_batting(batter_df).set_index('Team')
+    positive_matchups = summary[summary['StrengthDiff'] > 0]
+    
+    st.dataframe(
+        positive_matchups,
+        use_container_width=True,
+        column_config={
+            "Date": st.column_config.TextColumn("Date"),
+            "Pitcher": st.column_config.TextColumn("Pitcher"),
+            "Team": st.column_config.TextColumn("Team"),
+            "Opponent": st.column_config.TextColumn("Opponent"),
+            "StrengthDiff": st.column_config.NumberColumn("Strength Difference", format="%.1f")
+        }
+    )
+    st.markdown(f"*Found {len(positive_matchups)} matchups with positive strength difference*")
 
-    est_now = datetime.now(EST)
-    monday = est_now - timedelta(days=est_now.weekday())
-    monday = monday.replace(hour=0, minute=0, second=0, microsecond=0)
-    dates = [(monday + timedelta(days=i)).strftime('%Y-%m-%d') for i in range(7)]
-
-    st.header("🎯 Top Streaming Picks This Week")
-    all_games = []
-
-    with st.spinner('Processing schedule data...'):
-        for date in dates:
+st.header("Pitcher Matchups")
+tabs = st.tabs(dates)
+for tab, date in zip(tabs, dates):
+    with tab:
+        with st.spinner(f'Loading matchups for {date}...'):
             sched = fetch_schedule(date)
             games = process_schedule(sched, pitcher_df, team_batting)
             if not games.empty:
-                games['Date'] = date
-                all_games.append(games)
+                st.dataframe(
+                    games.sort_values('StrengthDiff', ascending=False),
+                    use_container_width=True,
+                    column_config={
+                        "Pitcher": st.column_config.TextColumn("Pitcher"),
+                        "Matchup": st.column_config.TextColumn("Matchup"),
+                        "PitcherProjPts": st.column_config.NumberColumn("Pitcher Projected Points", format="%.1f"),
+                        "OppBattingAvg": st.column_config.NumberColumn("Opponent Team Batting Avg", format="%.1f"),
+                        "StrengthDiff": st.column_config.NumberColumn("Strength Difference", format="%.1f")
+                    }
+                )
+            else:
+                st.info(f"No games scheduled for {date}")
 
-    if all_games:
-        weekly = pd.concat(all_games)
-        weekly = weekly[weekly['Pitcher'] != 'TBD']
-        weekly['Team'] = weekly['Matchup'].apply(lambda x: x.split()[0])
-        weekly['Opponent'] = weekly['Matchup'].apply(lambda x: x.split()[-1])
-        
-        summary = weekly[['Date', 'Pitcher', 'Team', 'Opponent', 'StrengthDiff']]
-        summary = summary.sort_values('StrengthDiff', ascending=False)
-        
-        positive_matchups = summary[summary['StrengthDiff'] > 0]
-        
-        st.dataframe(
-            positive_matchups,
-            use_container_width=True,
-            column_config={
-                "Date": st.column_config.TextColumn("Date"),
-                "Pitcher": st.column_config.TextColumn("Pitcher"),
-                "Team": st.column_config.TextColumn("Team"),
-                "Opponent": st.column_config.TextColumn("Opponent"),
-                "StrengthDiff": st.column_config.NumberColumn("Strength Difference", format="%.1f")
-            }
-        )
-        st.markdown(f"*Found {len(positive_matchups)} matchups with positive strength difference*")
+st.header("Team Batting Analysis")
+if not team_batting.empty:
+    st.dataframe(
+        team_batting,
+        use_container_width=True,
+        column_config={
+            "Team": st.column_config.TextColumn("Team"),
+            "AvgPtsPerPA": st.column_config.NumberColumn("Average Points per PA", format="%.3f"),
+            "ExpectedPts": st.column_config.NumberColumn("Expected Points vs Starter", format="%.1f"),
+            "Players": st.column_config.TextColumn("Recent Lineup Players (Position) [Appearances]")
+        }
+    )
+else:
+    st.error("Unable to analyze team batting projections")
+
+st.header("Batter Projections")
+if not batter_df.empty:
+    st.dataframe(
+        batter_df.sort_values("ProjPts", ascending=False),
+        use_container_width=True,
+        column_config={
+            "Name": st.column_config.TextColumn("Name"),
+            "Team": st.column_config.TextColumn("Team"),
+            "Pos": st.column_config.TextColumn("Position"),
+            "ProjPts": st.column_config.NumberColumn("Projected Points", format="%.1f"),
+            "PA": st.column_config.NumberColumn("Projected PA", format="%.0f"),
+            "PtsPerPA": st.column_config.NumberColumn("Points per PA", format="%.3f")
+        }
+    )
+else:
+    st.error("Unable to load batter projections")
     
-    st.header("Pitcher Matchups")
-    tabs = st.tabs(dates)
-    for tab, date in zip(tabs, dates):
-        with tab:
-            with st.spinner(f'Loading matchups for {date}...'):
-                sched = fetch_schedule(date)
-                games = process_schedule(sched, pitcher_df, team_batting)
-                if not games.empty:
-                    st.dataframe(
-                        games.sort_values('StrengthDiff', ascending=False),
-                        use_container_width=True,
-                        column_config={
-                            "Pitcher": st.column_config.TextColumn("Pitcher"),
-                            "Matchup": st.column_config.TextColumn("Matchup"),
-                            "PitcherProjPts": st.column_config.NumberColumn("Pitcher Projected Points", format="%.1f"),
-                            "OppBattingAvg": st.column_config.NumberColumn("Opponent Team Batting Avg", format="%.1f"),
-                            "StrengthDiff": st.column_config.NumberColumn("Strength Difference", format="%.1f")
-                        }
-                    )
-                else:
-                    st.info(f"No games scheduled for {date}")
-
-    st.header("Team Batting Analysis")
-    if not team_batting.empty:
-        st.dataframe(
-            team_batting,
-            use_container_width=True,
-            column_config={
-                "Team": st.column_config.TextColumn("Team"),
-                "AvgPtsPerPA": st.column_config.NumberColumn("Average Points per PA", format="%.3f"),
-                "ExpectedPts": st.column_config.NumberColumn("Expected Points vs Starter", format="%.1f"),
-                "Players": st.column_config.TextColumn("Recent Lineup Players (Position) [Appearances]")
-            }
-        )
-    else:
-        st.error("Unable to analyze team batting projections")
-
-    st.header("Batter Projections")
-    if not batter_df.empty:
-        st.dataframe(
-            batter_df.sort_values("ProjPts", ascending=False),
-            use_container_width=True,
-            column_config={
-                "Name": st.column_config.TextColumn("Name"),
-                "Team": st.column_config.TextColumn("Team"),
-                "Pos": st.column_config.TextColumn("Position"),
-                "ProjPts": st.column_config.NumberColumn("Projected Points", format="%.1f"),
-                "PA": st.column_config.NumberColumn("Projected PA", format="%.0f"),
-                "PtsPerPA": st.column_config.NumberColumn("Points per PA", format="%.3f")
-            }
-        )
-    else:
-        st.error("Unable to load batter projections")
-        
-    st.header("Pitcher Projections")
-    if not pitcher_df.empty:
-        st.dataframe(
-            pitcher_df.sort_values("ProjPts", ascending=False),
-            use_container_width=True,
-            column_config={
-                "Name": st.column_config.TextColumn("Name"),
-                "Team": st.column_config.TextColumn("Team"),
-                "Pos": st.column_config.TextColumn("Position"),
-                "ProjPts": st.column_config.NumberColumn("Projected Points", format="%.1f"),
-                "IP": st.column_config.NumberColumn("Projected IP", format="%.1f"),
-                "PtsPerIP": st.column_config.NumberColumn("Points per IP", format="%.3f")
-            }
-        )
-    else:
-        st.error("Unable to load pitcher projections")
-
-if __name__ == "__main__":
-    main()
+st.header("Pitcher Projections")
+if not pitcher_df.empty:
+    st.dataframe(
+        pitcher_df.sort_values("ProjPts", ascending=False),
+        use_container_width=True,
+        column_config={
+            "Name": st.column_config.TextColumn("Name"),
+            "Team": st.column_config.TextColumn("Team"),
+            "Pos": st.column_config.TextColumn("Position"),
+            "ProjPts": st.column_config.NumberColumn("Projected Points", format="%.1f"),
+            "IP": st.column_config.NumberColumn("Projected IP", format="%.1f"),
+            "PtsPerIP": st.column_config.NumberColumn("Points per IP", format="%.3f")
+        }
+    )
+else:
+    st.error("Unable to load pitcher projections") 
