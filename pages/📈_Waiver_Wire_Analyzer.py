@@ -1,13 +1,25 @@
+"""
+Waiver Wire Analyzer Page.
+
+This page helps users identify valuable players available on the waiver wire.
+"""
 import streamlit as st
 import pandas as pd
-import requests
-from unidecode import unidecode
-import logging
 import json
+from typing import Dict, Any, List, Optional, Tuple
 
-# Set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# Import from our modules
+from utils.logging_utils import setup_logging
+from utils.data_processing import convert_positions, process_team_rosters, process_fangraphs_data
+from utils.name_utils import stem_name
+from services.espn_service import ESPNService
+from services.fangraphs_service import FanGraphsService
+from config.settings import DEFAULT_LEAGUE_ID, DEFAULT_ROSTER_SLOTS
+
+# Setup logging
+logger = setup_logging()
+
+# No need to initialize service instances as we're using static methods
 
 # Set page config
 st.set_page_config(
@@ -19,343 +31,63 @@ st.set_page_config(
 # Title
 st.title("📈 Waiver Wire Analyzer")
 
-# Position ID to name mapping
-POSITION_MAP = {
-    0: "C",
-    1: "1B",
-    2: "2B",
-    3: "3B",
-    4: "SS",
-    5: "OF",
-    6: "MI",
-    7: "CI",
-    8: "LF",
-    9: "CF",
-    10: "RF",
-    11: "DH",
-    12: "UTIL",
-    13: "P",
-    14: "SP",
-    15: "RP",
-    16: "BN",
-    17: "IL",
-    18: "NA",
-    19: "IF"
-}
-
-# Utility functions
-def stem_name(name: str) -> str:
-    """Standardize player name for matching."""
-    # Special case mappings for players with name discrepancies
-    mappings = {
-        'ben-williamson': 'benjamin-williamson', 
-        'zach-dezenzo': 'zachary-dezenzo',
-        'cj-abrams': 'c.j.-abrams',
-        'jt-realmuto': 'j.t.-realmuto',
-        'aj-pollock': 'a.j.-pollock'
-    }
-    # Clean and standardize the name
-    clean_name = unidecode(name.lower().replace('.', '').replace(' ', '-'))
-    return mappings.get(clean_name, clean_name)
-
-def convert_positions(positions_list):
-    """Convert position IDs to position names, showing only key positions."""
-    if not isinstance(positions_list, list):
-        return ""
+def optimize_roster(players: List[Dict[str, Any]], slots: Dict[str, int]) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Optimize a roster by assigning players to positions based on projected points.
     
-    # Define the positions we want to display
-    display_positions = {"C", "1B", "2B", "3B", "SS", "OF", "SP", "RP", "DH"}
-    
-    # Map position IDs to their names and filter for display positions
-    positions = []
-    
-    for pos in positions_list:
-        pos_name = POSITION_MAP.get(pos, str(pos))
+    Args:
+        players: List of player dictionaries
+        slots: Dictionary of roster slots and counts
         
-        # Convert all outfield positions (LF, CF, RF) to just "OF"
-        if pos_name in ["LF", "CF", "RF"]:
-            pos_name = "OF"
-            
-        # Only include the position if it's in our display set
-        if pos_name in display_positions and pos_name not in positions:
-            positions.append(pos_name)
+    Returns:
+        Dictionary of position assignments
+    """
+    # Sort players by projected points (highest first)
+    sorted_players = sorted(players, key=lambda p: p['projected_points'], reverse=True)
     
-    return ", ".join(positions)
-
-# Function to fetch player data from ESPN
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def fetch_espn_player_data():
-    url = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/2025/players?scoringPeriodId=0&view=players_wl"
+    # Initialize assigned slots
+    assignments = {position: [] for position in slots.keys()}
+    assignments["BN"] = []  # Bench
     
-    headers = {
-        "X-Fantasy-Filter": '{"filterActive":{"value":true}}',
-        "sec-ch-ua-platform": "macOS",
-        "Referer": "https://fantasy.espn.com/",
-        "sec-ch-ua": '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
-        "X-Fantasy-Platform": "kona-PROD-ea1dac81fac83846270c371702992d3a2f69aa70",
-        "sec-ch-ua-mobile": "?0",
-        "X-Fantasy-Source": "kona",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-        "Accept": "application/json"
-    }
+    # Track which players have been assigned
+    assigned_players = set()
     
-    try:
-        logger.info("Fetching ESPN player data")
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        logger.info(f"Successfully fetched ESPN player data: {len(data)} players")
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching ESPN data: {e}")
-        st.error(f"Error fetching ESPN data: {e}")
-        return None
-
-# Function to fetch ESPN league teams data
-@st.cache_data(ttl=3600, show_spinner=False)  # Cache for 1 hour
-def fetch_espn_teams_data(league_id, season_id=2025):
-    url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/{season_id}/segments/0/leagues/{league_id}"
-    
-    headers = {
-        "sec-ch-ua-platform": "macOS",
-        "Referer": "https://fantasy.espn.com/",
-        "sec-ch-ua": '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
-        "X-Fantasy-Platform": "kona-PROD-ea1dac81fac83846270c371702992d3a2f69aa70",
-        "sec-ch-ua-mobile": "?0",
-        "X-Fantasy-Source": "kona",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-        "Accept": "application/json"
-    }
-    
-    try:
-        logger.info(f"Fetching ESPN teams data for league {league_id}")
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        logger.info(f"Successfully fetched ESPN teams data: {len(data.get('teams', []))} teams")
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching ESPN teams data: {e}")
-        st.error(f"Error fetching ESPN teams data: {e}")
-        return None
-
-# Function to fetch ESPN league team rosters
-@st.cache_data(ttl=3600, show_spinner=False)  # Cache for 1 hour
-def fetch_espn_team_rosters(league_id, season_id=2025):
-    url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/{season_id}/segments/0/leagues/{league_id}?view=mRoster"
-    
-    headers = {
-        "sec-ch-ua-platform": "macOS",
-        "Referer": "https://fantasy.espn.com/",
-        "sec-ch-ua": '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
-        "X-Fantasy-Platform": "kona-PROD-ea1dac81fac83846270c371702992d3a2f69aa70",
-        "sec-ch-ua-mobile": "?0",
-        "X-Fantasy-Source": "kona",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-        "Accept": "application/json"
-    }
-    
-    try:
-        logger.info(f"Fetching ESPN team rosters for league {league_id}")
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
+    # First pass - try to fill each position with the best available player
+    for position, count in slots.items():
+        eligible_players = [
+            p for p in sorted_players 
+            if p['name'] not in assigned_players and 
+                (position in p['positions'] or 
+                (position == "UTIL" and p['is_hitter']) or
+                (position == "P" and p['is_pitcher']))
+        ]
         
-        # Debug logs for response structure
-        if 'teams' in data:
-            logger.info(f"Successfully fetched roster data with {len(data['teams'])} teams")
-            for i, team in enumerate(data['teams']):
-                roster_entries = team.get('roster', {}).get('entries', [])
-                logger.info(f"Team {i+1}: {team.get('name')} - {len(roster_entries)} players")
-        else:
-            logger.warning(f"Roster data missing 'teams' key. Keys: {list(data.keys())}")
-            
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching ESPN team rosters: {e}")
-        st.error(f"Error fetching ESPN team rosters: {e}")
-        return None
-
-# Function to fetch FanGraphs batter projections
-@st.cache_data(ttl=3600)
-def fetch_fangraphs_batters():
-    url = "https://www.fangraphs.com/api/fantasy/auction-calculator/data?teams=10&lg=MLB&dollars=260&mb=1&mp=12&msp=5&mrp=2&type=bat&players=&proj=rthebatx&split=&points=p%7C0%2C0%2C0%2C1%2C2%2C3%2C4%2C1%2C0%2C1%2C1%2C1%2C-1%2C0%2C0%2C0%7C3%2C2%2C-2%2C5%2C1%2C-2%2C0%2C-1%2C0%2C-1%2C2&rep=0&drp=0&pp=C%2CSS%2C2B%2C3B%2COF%2C1B&pos=1%2C1%2C1%2C1%2C3%2C1%2C0%2C0%2C0%2C1%2C5%2C2%2C0%2C3%2C0&sort=&view=0"
+        # Assign up to 'count' players to this position
+        for i in range(min(count, len(eligible_players))):
+            assignments[position].append(eligible_players[i])
+            assigned_players.add(eligible_players[i]['name'])
     
-    headers = {
-        "sec-ch-ua-platform": "macOS",
-        "Referer": "https://www.fangraphs.com/fantasy-tools/auction-calculator?teams=10&lg=MLB&dollars=260&mb=1&mp=12&msp=5&mrp=2&type=bat&players=&proj=rthebatx&split=&points=p%7C0%2C0%2C0%2C1%2C2%2C3%2C4%2C1%2C0%2C1%2C1%2C1%2C-1%2C0%2C0%2C0%7C3%2C2%2C-2%2C5%2C1%2C-2%2C0%2C-1%2C0%2C-1%2C2&rep=0&drp=0&pp=C%2CSS%2C2B%2C3B%2COF%2C1B&pos=1%2C1%2C1%2C1%2C3%2C1%2C0%2C0%2C0%2C1%2C5%2C2%2C0%2C3%2C0&sort=&view=0",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "sec-ch-ua": '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
-        "sec-ch-ua-mobile": "?0"
-    }
+    # Assign remaining players to bench
+    for player in sorted_players:
+        if player['name'] not in assigned_players:
+            assignments["BN"].append(player)
+            assigned_players.add(player['name'])
     
-    try:
-        logger.info("Fetching FanGraphs batter data")
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        if 'data' in data:
-            logger.info(f"Successfully fetched FanGraphs batter data: {len(data['data'])} batters")
-        else:
-            logger.warning("FanGraphs batter data missing 'data' key")
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching FanGraphs batter data: {e}")
-        st.error(f"Error fetching FanGraphs batter data: {e}")
-        return None
-
-# Function to fetch FanGraphs pitcher projections
-@st.cache_data(ttl=3600)
-def fetch_fangraphs_pitchers():
-    url = "https://www.fangraphs.com/api/fantasy/auction-calculator/data?teams=10&lg=MLB&dollars=260&mb=1&mp=12&msp=5&mrp=2&type=pit&players=&proj=ratcdc&split=&points=p%7C0%2C0%2C0%2C1%2C2%2C3%2C4%2C1%2C0%2C1%2C1%2C1%2C-1%2C0%2C0%2C0%7C3%2C2%2C-2%2C5%2C1%2C-2%2C0%2C-1%2C0%2C-1%2C2&rep=0&drp=0&pp=C%2CSS%2C2B%2C3B%2COF%2C1B&pos=1%2C1%2C1%2C1%2C3%2C1%2C0%2C0%2C0%2C1%2C5%2C2%2C0%2C3%2C0&sort=&view=0"
-    
-    headers = {
-        "accept": "application/json, text/plain, */*",
-        "sec-ch-ua-platform": "macOS",
-        "referer": "https://www.fangraphs.com/fantasy-tools/auction-calculator?teams=10&lg=MLB&dollars=260&mb=1&mp=12&msp=5&mrp=2&type=pit&players=&proj=rthebatx&split=&points=p%7C0%2C0%2C0%2C1%2C2%2C3%2C4%2C1%2C0%2C1%2C1%2C1%2C-1%2C0%2C0%2C0%7C3%2C2%2C-2%2C5%2C1%2C-2%2C0%2C-1%2C0%2C-1%2C2&rep=0&drp=0&pp=C%2CSS%2C2B%2C3B%2COF%2C1B&pos=1%2C1%2C1%2C1%2C3%2C1%2C0%2C0%2C0%2C1%2C5%2C2%2C0%2C3%2C0&sort=&view=0",
-        "sec-ch-ua": '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
-        "sec-ch-ua-mobile": "?0",
-        "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36"
-    }
-    
-    try:
-        logger.info("Fetching FanGraphs pitcher data")
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        if 'data' in data:
-            logger.info(f"Successfully fetched FanGraphs pitcher data: {len(data['data'])} pitchers")
-        else:
-            logger.warning("FanGraphs pitcher data missing 'data' key")
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching FanGraphs pitcher data: {e}")
-        st.error(f"Error fetching FanGraphs pitcher data: {e}")
-        return None
-
-# Process FanGraphs data into a standardized format
-def process_fangraphs_data(data, player_type):
-    if not data or 'data' not in data:
-        logger.warning(f"No valid data for {player_type}s processing")
-        return pd.DataFrame()
-        
-    records = []
-    for player in data.get('data', []):
-        name = player.get("PlayerName", "")
-        if not name:
-            continue
-            
-        stemmed_name = stem_name(name)
-        
-        # Safely get projection points
-        try:
-            proj_pts = float(player.get("rPTS", 0))
-        except (ValueError, TypeError):
-            logger.warning(f"Invalid projection points for {name}: {player.get('rPTS')}")
-            proj_pts = 0.0
-        
-        record = {
-            "Name": name,
-            "StemmedName": stemmed_name,
-            "Team": player.get("Team", ""),
-            "Pos": player.get("POS", ""),
-            "ProjPts": proj_pts,
-            "PlayerType": player_type
-        }
-        records.append(record)
-    
-    logger.info(f"Processed {len(records)} {player_type} records")    
-    return pd.DataFrame(records)
-
-# Process team roster data
-def process_team_rosters(roster_data, teams_data, espn_df):
-    if not roster_data or 'teams' not in roster_data:
-        logger.warning("Invalid roster data structure")
-        return {}, {}
-    
-    # Create a map of team ID to abbreviation
-    team_abbrev_map = {}
-    if teams_data and 'teams' in teams_data:
-        for team in teams_data.get('teams', []):
-            team_id = team.get('id')
-            abbrev = team.get('abbrev', f'Team {team_id}')
-            team_abbrev_map[team_id] = abbrev
-            logger.info(f"Found team abbreviation: {abbrev} for team ID: {team_id}")
-    
-    team_rosters = {}
-    player_team_map = {}
-    
-    for team in roster_data.get('teams', []):
-        team_id = team.get('id')
-        # Use abbreviation if available, otherwise fall back to name
-        team_name = team.get('name', f'Team {team_id}')
-        team_abbrev = team_abbrev_map.get(team_id, team_name)
-        
-        logger.info(f"Processing team: {team_abbrev} (ID: {team_id})")
-        
-        team_rosters[team_id] = {
-            'name': team_name,
-            'abbrev': team_abbrev,
-            'players': []
-        }
-        
-        # Get roster entries for this team
-        roster_entries = team.get('roster', {}).get('entries', [])
-        logger.info(f"Team {team_abbrev} has {len(roster_entries)} roster entries")
-        
-        for entry in roster_entries:
-            player_id = entry.get('playerId')
-            
-            # Add player to team map
-            player_team_map[player_id] = {
-                'team_id': team_id, 
-                'team_name': team_name,
-                'team_abbrev': team_abbrev
-            }
-            
-            # Find player in ESPN data
-            player_data = espn_df[espn_df['id'] == player_id]
-            
-            if not player_data.empty:
-                # Debug the player data
-                player_name = player_data['fullName'].iloc[0]
-                
-                # Safely access projPts
-                proj_pts = None
-                if 'projPts' in player_data.columns:
-                    try:
-                        proj_pts = float(player_data['projPts'].iloc[0]) if not pd.isna(player_data['projPts'].iloc[0]) else None
-                    except (ValueError, TypeError):
-                        logger.warning(f"Invalid projection points for {player_name}: {player_data['projPts'].iloc[0]}")
-                
-                player_info = {
-                    'id': player_id,
-                    'name': player_name,
-                    'positions': convert_positions(player_data['eligibleSlots'].iloc[0]),
-                    'projPts': proj_pts
-                }
-                team_rosters[team_id]['players'].append(player_info)
-                logger.info(f"Added player: {player_name} to team {team_abbrev}")
-            else:
-                logger.warning(f"Player ID {player_id} not found in ESPN data")
-    
-    logger.info(f"Processed {len(player_team_map)} players across {len(team_rosters)} teams")
-    return team_rosters, player_team_map
+    return assignments
 
 # Add league ID input in the sidebar
 with st.sidebar:
     st.header("ESPN Fantasy Settings")
-    league_id = st.text_input("League ID", value="339466431", help="Enter your ESPN Fantasy Baseball League ID")
+    league_id = st.text_input("League ID", value=DEFAULT_LEAGUE_ID, help="Enter your ESPN Fantasy Baseball League ID")
     
     # Add debug toggle
     show_debug = st.checkbox("Show Debug Info", value=False, help="Show debug information in the UI")
 
 # Fetch all data
 with st.spinner("Fetching player data..."):
-    espn_data = fetch_espn_player_data()
-    fg_batters_data = fetch_fangraphs_batters()
-    fg_pitchers_data = fetch_fangraphs_pitchers()
+    espn_data = ESPNService.fetch_player_data()
+    fg_batters_data = FanGraphsService.fetch_projections('batter')
+    fg_pitchers_data = FanGraphsService.fetch_projections('pitcher')
 
 if espn_data:
     # Process ESPN data
@@ -395,7 +127,7 @@ if espn_data:
             logger.info(f"Fetching rosters for league ID: {league_id}")
             
             # First fetch the teams data
-            teams_data = fetch_espn_teams_data(league_id)
+            teams_data = ESPNService.fetch_teams_data(league_id)
             if not teams_data:
                 st.error("Failed to fetch teams data. Check your league ID and try again.")
                 logger.error("Failed to fetch teams data")
@@ -403,7 +135,7 @@ if espn_data:
                 logger.info(f"Successfully fetched teams data with {len(teams_data.get('teams', []))} teams")
                 
                 # Then fetch the team rosters
-                roster_data = fetch_espn_team_rosters(league_id)
+                roster_data = ESPNService.fetch_team_rosters(league_id)
                 
                 if roster_data:
                     # Log some info about the roster data for debugging
@@ -477,18 +209,6 @@ if espn_data:
             team_roster = simplified_df[simplified_df['Team'] == selected_team].copy()
             
             if not team_roster.empty:
-                # Define roster slot structure
-                roster_slots = {
-                    "C": 1,
-                    "1B": 1,
-                    "2B": 1, 
-                    "3B": 1,
-                    "SS": 1,
-                    "OF": 3,
-                    "UTIL": 1,  # Any hitter
-                    "P": 7      # Any pitcher (SP or RP) - 7 total pitcher slots
-                }
-                
                 # Process the team roster to extract position eligibility
                 processed_roster = []
                 for _, player in team_roster.iterrows():
@@ -507,51 +227,16 @@ if espn_data:
                         'is_hitter': is_hitter
                     })
                 
-                # Roster optimization function
-                def optimize_roster(players, slots):
-                    # Sort players by projected points (highest first)
-                    sorted_players = sorted(players, key=lambda p: p['projected_points'], reverse=True)
-                    
-                    # Initialize assigned slots
-                    assignments = {position: [] for position in slots.keys()}
-                    assignments["BN"] = []  # Bench
-                    
-                    # Track which players have been assigned
-                    assigned_players = set()
-                    
-                    # First pass - try to fill each position with the best available player
-                    for position, count in slots.items():
-                        eligible_players = [
-                            p for p in sorted_players 
-                            if p['name'] not in assigned_players and 
-                                (position in p['positions'] or 
-                                (position == "UTIL" and p['is_hitter']) or
-                                (position == "P" and p['is_pitcher']))
-                        ]
-                        
-                        # Assign up to 'count' players to this position
-                        for i in range(min(count, len(eligible_players))):
-                            assignments[position].append(eligible_players[i])
-                            assigned_players.add(eligible_players[i]['name'])
-                    
-                    # Assign remaining players to bench
-                    for player in sorted_players:
-                        if player['name'] not in assigned_players:
-                            assignments["BN"].append(player)
-                            assigned_players.add(player['name'])
-                    
-                    return assignments
-                
                 # Run the optimization
                 with st.spinner("Optimizing roster..."):
-                    optimized_roster = optimize_roster(processed_roster, roster_slots)
+                    optimized_roster = optimize_roster(processed_roster, DEFAULT_ROSTER_SLOTS)
                 
                 # Display the optimized roster
                 st.write("### Optimized Starting Lineup")
                 
                 # Display starters by position
                 starting_slots = []
-                for position, count in roster_slots.items():
+                for position, count in DEFAULT_ROSTER_SLOTS.items():
                     players_at_position = optimized_roster[position]
                     for i in range(min(count, len(players_at_position))):
                         player = players_at_position[i]
@@ -660,7 +345,7 @@ if espn_data:
                                     original_starters.add(player['name'])
                         
                         # Run optimization with combined roster
-                        optimized_combined = optimize_roster(combined_roster, roster_slots)
+                        optimized_combined = optimize_roster(combined_roster, DEFAULT_ROSTER_SLOTS)
                         
                         # Identify free agents who made it into the starting lineup
                         recommended_pickups = []

@@ -1,14 +1,29 @@
+"""
+Pitcher Streaming Analysis Page.
+
+This page helps users analyze pitcher matchups and find the best streaming options.
+"""
 import streamlit as st
 import pandas as pd
-import requests
-import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
 import pytz
-from nltk.stem import SnowballStemmer
-from unidecode import unidecode
 import nltk
-import json
+from typing import Dict, Any, Optional, List
+
+# Import from our modules
+from utils.logging_utils import setup_logging
+from utils.data_processing import map_team_abbr, convert_positions, process_team_rosters, process_fangraphs_data
+from utils.name_utils import stem_name
+from services.espn_service import ESPNService
+from services.fangraphs_service import FanGraphsService
+from services.mlb_service import MLBService
+from config.constants import AVG_STARTER_IP, AVG_PA_PER_INNING, DEFAULT_PITCHER_PTS, TEAM_IDS
+from config.settings import EST, DEFAULT_LEAGUE_ID
+
+# Setup logging
+logger = setup_logging()
+
+# No need to initialize service instances as we're using static methods
 
 # --- Streamlit Configuration ---
 st.set_page_config(
@@ -19,315 +34,25 @@ st.set_page_config(
 
 # --- Setup ---
 nltk.download('punkt', quiet=True)
-stemmer = SnowballStemmer('english')
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# --- Constants ---
-EST = pytz.timezone('US/Eastern')
-AVG_STARTER_IP = 5.5
-AVG_PA_PER_INNING = 4.2
-DEFAULT_PITCHER_PTS = 6.0
-HEADERS = {
-    'User-Agent': 'Mozilla/5.0',
-    'Accept': 'application/json, text/plain, */*'
-}
-TEAM_MAP = {
-    'CWS': 'CHW', 'SF': 'SFG', 'SD': 'SDP', 'WSH': 'WSN', 'WAS': 'WSN', 'TB': 'TBR',
-    'KC': 'KCR', 'ANA': 'LAA', 'FLA': 'MIA', 'NYN': 'NYM', 'SLN': 'STL', 'LAN': 'LAD', 
-    'SFN': 'SFG', 'AZ': 'ARI'
-}
-TEAM_IDS = {
-    'LAA': 1, 'BAL': 2, 'BOS': 3, 'CHW': 4, 'CLE': 5, 'DET': 6, 'KCR': 7, 'MIN': 8,
-    'NYY': 9, 'ATH': 10, 'SEA': 11, 'TBR': 12, 'TEX': 13, 'TOR': 14, 'ARI': 15,
-    'ATL': 16, 'CHC': 17, 'CIN': 18, 'COL': 19, 'MIA': 20, 'HOU': 21, 'LAD': 22,
-    'MIL': 23, 'WSN': 24, 'NYM': 25, 'PHI': 26, 'PIT': 27, 'STL': 28, 'SDP': 29,
-    'SFG': 30
-}
-POSITION_MAP = {
-    0: "C", 1: "1B", 2: "2B", 3: "3B", 4: "SS", 5: "OF", 6: "MI", 7: "CI", 8: "LF",
-    9: "CF", 10: "RF", 11: "DH", 12: "UTIL", 13: "P", 14: "SP", 15: "RP", 16: "BN",
-    17: "IL", 18: "NA", 19: "IF"
-}
-
-# --- Utility Functions ---
-def safe_get(url: str) -> Optional[Dict[str, Any]]:
-    """Safe API request with error handling."""
-    try:
-        res = requests.get(url, headers=HEADERS, timeout=30)
-        if res.status_code != 200:
-            logger.error(f"Request failed {res.status_code}: {url}")
-            return None
-        return res.json()
-    except Exception as e:
-        logger.error(f"Request exception: {e}")
-        return None
-
-def stem_name(name: str) -> str:
-    """Standardize player name."""
-    mappings = {
-        'ben-williamson': 'benjamin-williamson', 
-        'zach-dezenzo': 'zachary-dezenzo',
-        'cj-abrams': 'c.j.-abrams',
-        'jt-realmuto': 'j.t.-realmuto',
-        'aj-pollock': 'a.j.-pollock'
-    }
-    name = unidecode(name.lower().replace('.', '').replace(' ', '-'))
-    return mappings.get(name, name)
-
-def map_team_abbr(abbr: str) -> str:
-    """Standardize team abbreviations."""
-    return TEAM_MAP.get(abbr, abbr)
-
-def convert_positions(positions_list):
-    """Convert position IDs to position names, showing only key positions."""
-    if not isinstance(positions_list, list):
-        return ""
-    
-    # Define the positions we want to display
-    display_positions = {"C", "1B", "2B", "3B", "SS", "OF", "SP", "RP", "DH"}
-    
-    # Map position IDs to their names and filter for display positions
-    positions = []
-    
-    for pos in positions_list:
-        pos_name = POSITION_MAP.get(pos, str(pos))
-        
-        # Convert all outfield positions (LF, CF, RF) to just "OF"
-        if pos_name in ["LF", "CF", "RF"]:
-            pos_name = "OF"
-            
-        # Only include the position if it's in our display set
-        if pos_name in display_positions and pos_name not in positions:
-            positions.append(pos_name)
-    
-    return ", ".join(positions)
-
-# --- Data Fetchers ---
+# --- Main Functions ---
 @st.cache_data(ttl=3600)
-def fetch_projections(player_type: str) -> pd.DataFrame:
-    """Fetch and process projections."""
-    urls = {
-        'batter': "https://www.fangraphs.com/api/fantasy/auction-calculator/data?teams=10&lg=MLB&dollars=260&mb=1&mp=12&msp=5&mrp=2&type=bat&players=&proj=rthebatx&split=&points=p%7C0%2C0%2C1%2C0%2C0%2C0%2C0%2C0%2C0%2C1%2C2%2C1%2C-1%2C0%2C0%2C0%7C3%2C2%2C-2%2C5%2C1%2C-2%2C0%2C-1%2C0%2C-1%2C2&rep=0&drp=0&pp=C%2CSS%2C2B%2C3B%2COF%2C1B&pos=1%2C1%2C1%2C1%2C3%2C1%2C0%2C0%2C0%2C1%2C5%2C2%2C0%2C3%2C0&sort=&view=0",
-        'pitcher': "https://www.fangraphs.com/api/fantasy/auction-calculator/data?teams=10&lg=MLB&dollars=260&mb=1&mp=12&msp=5&mrp=2&type=pit&players=&proj=ratcdc&split=&points=p%7C0%2C0%2C0%2C1%2C2%2C3%2C4%2C1%2C0%2C1%2C1%2C1%2C-1%2C0%2C0%2C0%7C3%2C2%2C-2%2C5%2C1%2C-2%2C0%2C-1%2C0%2C-1%2C2&rep=0&drp=0&pp=C%2CSS%2C2B%2C3B%2COF%2C1B&pos=1%2C1%2C1%2C1%2C3%2C1%2C0%2C0%2C0%2C1%2C5%2C2%2C0%2C3%2C0&sort=&view=0"
-    }
-    data = safe_get(urls[player_type])
-    if not data:
-        return pd.DataFrame()
-
-    records = []
-    for player in data.get('data', []):
-        if player_type == 'pitcher' and player.get("POS") not in ["SP", "RP"]:
-            continue
-        name = player.get("PlayerName", "")
-        proj_pts = float(player.get("rPTS", 0))
-        record = {
-            "Name": name,
-            "StemmedName": stem_name(name),
-            "Team": player.get("Team", ""),
-            "Pos": player.get("POS", ""),
-            "ProjPts": proj_pts
-        }
-        if player_type == 'batter':
-            pa = float(player.get("PA", 0))
-            record.update({"PA": pa, "PtsPerPA": proj_pts / pa if pa else 0})
-        else:
-            ip = float(player.get("IP", 0))
-            record.update({"IP": ip, "PtsPerIP": proj_pts / ip if ip else 0})
-        records.append(record)
-    return pd.DataFrame(records)
-
-@st.cache_data(ttl=3600)
-def fetch_schedule(date: str) -> Optional[Dict[str, Any]]:
-    url = f"https://statsapi.mlb.com/api/v1/schedule?sportId=1&date={date}&leagueId=103,104&hydrate=team,linescore,flags,liveLookin,review&useLatestGames=false&language=en"
-    return safe_get(url)
-
-@st.cache_data(ttl=3600)
-def fetch_game_feed(game_id: int) -> Optional[Dict[str, Any]]:
-    return safe_get(f"https://statsapi.mlb.com/api/v1.1/game/{game_id}/feed/live")
-
-@st.cache_data(ttl=3600)
-def fetch_team_lineup(team_id: int) -> Optional[List[Dict[str, Any]]]:
-    url = f"https://www.fangraphs.com/api/depth-charts/past-lineups?teamid={team_id}&loaddate={int(datetime.now().timestamp())}"
-    return safe_get(url)
-
-@st.cache_data(ttl=3600)
-def fetch_espn_player_data():
-    url = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/2025/players?scoringPeriodId=0&view=players_wl"
-    
-    headers = {
-        "X-Fantasy-Filter": '{"filterActive":{"value":true}}',
-        "sec-ch-ua-platform": "macOS",
-        "Referer": "https://fantasy.espn.com/",
-        "sec-ch-ua": '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
-        "X-Fantasy-Platform": "kona-PROD-ea1dac81fac83846270c371702992d3a2f69aa70",
-        "sec-ch-ua-mobile": "?0",
-        "X-Fantasy-Source": "kona",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-        "Accept": "application/json"
-    }
-    
-    try:
-        logger.info("Fetching ESPN player data")
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        logger.info(f"Successfully fetched ESPN player data: {len(data)} players")
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching ESPN data: {e}")
-        st.error(f"Error fetching ESPN data: {e}")
-        return None
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_espn_teams_data(league_id, season_id=2025):
-    url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/{season_id}/segments/0/leagues/{league_id}"
-    
-    headers = {
-        "sec-ch-ua-platform": "macOS",
-        "Referer": "https://fantasy.espn.com/",
-        "sec-ch-ua": '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
-        "X-Fantasy-Platform": "kona-PROD-ea1dac81fac83846270c371702992d3a2f69aa70",
-        "sec-ch-ua-mobile": "?0",
-        "X-Fantasy-Source": "kona",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-        "Accept": "application/json"
-    }
-    
-    try:
-        logger.info(f"Fetching ESPN teams data for league {league_id}")
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        logger.info(f"Successfully fetched ESPN teams data: {len(data.get('teams', []))} teams")
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching ESPN teams data: {e}")
-        st.error(f"Error fetching ESPN teams data: {e}")
-        return None
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_espn_team_rosters(league_id, season_id=2025):
-    url = f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb/seasons/{season_id}/segments/0/leagues/{league_id}?view=mRoster"
-    
-    headers = {
-        "sec-ch-ua-platform": "macOS",
-        "Referer": "https://fantasy.espn.com/",
-        "sec-ch-ua": '"Google Chrome";v="135", "Not-A.Brand";v="8", "Chromium";v="135"',
-        "X-Fantasy-Platform": "kona-PROD-ea1dac81fac83846270c371702992d3a2f69aa70",
-        "sec-ch-ua-mobile": "?0",
-        "X-Fantasy-Source": "kona",
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-        "Accept": "application/json"
-    }
-    
-    try:
-        logger.info(f"Fetching ESPN team rosters for league {league_id}")
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        data = response.json()
-        
-        # Debug logs for response structure
-        if 'teams' in data:
-            logger.info(f"Successfully fetched roster data with {len(data['teams'])} teams")
-            for i, team in enumerate(data['teams']):
-                roster_entries = team.get('roster', {}).get('entries', [])
-                logger.info(f"Team {i+1}: {team.get('name')} - {len(roster_entries)} players")
-        else:
-            logger.warning(f"Roster data missing 'teams' key. Keys: {list(data.keys())}")
-            
-        return data
-    except requests.exceptions.RequestException as e:
-        logger.error(f"Error fetching ESPN team rosters: {e}")
-        st.error(f"Error fetching ESPN team rosters: {e}")
-        return None
-
-def process_team_rosters(roster_data, teams_data, espn_df):
-    if not roster_data or 'teams' not in roster_data:
-        logger.warning("Invalid roster data structure")
-        return {}, {}
-    
-    # Create a map of team ID to abbreviation
-    team_abbrev_map = {}
-    if teams_data and 'teams' in teams_data:
-        for team in teams_data.get('teams', []):
-            team_id = team.get('id')
-            abbrev = team.get('abbrev', f'Team {team_id}')
-            team_abbrev_map[team_id] = abbrev
-            logger.info(f"Found team abbreviation: {abbrev} for team ID: {team_id}")
-    
-    team_rosters = {}
-    player_team_map = {}
-    
-    for team in roster_data.get('teams', []):
-        team_id = team.get('id')
-        # Use abbreviation if available, otherwise fall back to name
-        team_name = team.get('name', f'Team {team_id}')
-        team_abbrev = team_abbrev_map.get(team_id, team_name)
-        
-        logger.info(f"Processing team: {team_abbrev} (ID: {team_id})")
-        
-        team_rosters[team_id] = {
-            'name': team_name,
-            'abbrev': team_abbrev,
-            'players': []
-        }
-        
-        # Get roster entries for this team
-        roster_entries = team.get('roster', {}).get('entries', [])
-        logger.info(f"Team {team_abbrev} has {len(roster_entries)} roster entries")
-        
-        for entry in roster_entries:
-            player_id = entry.get('playerId')
-            
-            # Add player to team map
-            player_team_map[player_id] = {
-                'team_id': team_id, 
-                'team_name': team_name,
-                'team_abbrev': team_abbrev
-            }
-            
-            # Find player in ESPN data
-            player_data = espn_df[espn_df['id'] == player_id]
-            
-            if not player_data.empty:
-                # Debug the player data
-                player_name = player_data['fullName'].iloc[0]
-                
-                # Safely access projPts
-                proj_pts = None
-                if 'projPts' in player_data.columns:
-                    try:
-                        proj_pts = float(player_data['projPts'].iloc[0]) if not pd.isna(player_data['projPts'].iloc[0]) else None
-                    except (ValueError, TypeError):
-                        logger.warning(f"Invalid projection points for {player_name}: {player_data['projPts'].iloc[0]}")
-                
-                player_info = {
-                    'id': player_id,
-                    'name': player_name,
-                    'positions': convert_positions(player_data['eligibleSlots'].iloc[0]),
-                    'projPts': proj_pts
-                }
-                team_rosters[team_id]['players'].append(player_info)
-                logger.info(f"Added player: {player_name} to team {team_abbrev}")
-            else:
-                logger.warning(f"Player ID {player_id} not found in ESPN data")
-    
-    logger.info(f"Processed {len(player_team_map)} players across {len(team_rosters)} teams")
-    return team_rosters, player_team_map
-
-# --- Data Processing ---
 def analyze_team_batting(batters: pd.DataFrame) -> pd.DataFrame:
+    """
+    Analyze team batting statistics based on recent lineups.
+    
+    Args:
+        batters: DataFrame of batter projections
+        
+    Returns:
+        DataFrame of team batting analysis
+    """
     if batters.empty:
         return pd.DataFrame()
 
     results = []
     for team, team_id in TEAM_IDS.items():
-        lineups = fetch_team_lineup(team_id)
+        lineups = MLBService.fetch_team_lineup(team_id)
         if not lineups:
             continue
 
@@ -378,6 +103,18 @@ def analyze_team_batting(batters: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(results)
 
 def process_schedule(schedule: Dict[str, Any], pitchers: pd.DataFrame, batting: pd.DataFrame, rostered_pitcher_names=None) -> pd.DataFrame:
+    """
+    Process MLB schedule data to analyze pitcher matchups.
+    
+    Args:
+        schedule: MLB schedule data
+        pitchers: DataFrame of pitcher projections
+        batting: DataFrame of team batting analysis
+        rostered_pitcher_names: List of rostered pitcher names
+        
+    Returns:
+        DataFrame of pitcher matchups
+    """
     if not schedule:
         return pd.DataFrame()
 
@@ -385,7 +122,7 @@ def process_schedule(schedule: Dict[str, Any], pitchers: pd.DataFrame, batting: 
     for day in schedule.get('dates', []):
         for game in day.get('games', []):
             gid = game['gamePk']
-            feed = fetch_game_feed(gid)
+            feed = MLBService.fetch_game_feed(gid)
             
             game_data = feed.get('gameData', {}) if feed else {}
             prob_pitchers = game_data.get('probablePitchers', {})
@@ -430,7 +167,8 @@ def process_schedule(schedule: Dict[str, Any], pitchers: pd.DataFrame, batting: 
             ])
             
     df = pd.DataFrame(games)
-    df['StrengthDiff'] = df['PitcherProjPts'] - df['OppBattingAvg']
+    if not df.empty:
+        df['StrengthDiff'] = df['PitcherProjPts'] - df['OppBattingAvg']
     return df
 
 # --- Main Page Content ---
@@ -440,13 +178,13 @@ st.markdown("This page helps you analyze pitchers for fantasy baseball using ATC
 # Add league ID input in the sidebar
 with st.sidebar:
     st.header("ESPN Fantasy Settings")
-    league_id = st.text_input("League ID", value="339466431", help="Enter your ESPN Fantasy Baseball League ID")
+    league_id = st.text_input("League ID", value=DEFAULT_LEAGUE_ID, help="Enter your ESPN Fantasy Baseball League ID")
     show_all = st.checkbox("Show All Pitchers", value=False, help="Show all pitchers including those on rosters")
     
     if league_id:
         with st.spinner("Loading league data..."):
             # First fetch ESPN player data
-            espn_data = fetch_espn_player_data()
+            espn_data = ESPNService.fetch_player_data()
             rostered_pitcher_names = []
             
             if espn_data:
@@ -457,8 +195,8 @@ with st.sidebar:
                 espn_df['stemmed_name'] = espn_df['fullName'].apply(stem_name)
                 
                 # Get teams and rosters
-                teams_data = fetch_espn_teams_data(league_id)
-                roster_data = fetch_espn_team_rosters(league_id)
+                teams_data = ESPNService.fetch_teams_data(league_id)
+                roster_data = ESPNService.fetch_team_rosters(league_id)
                 
                 if teams_data and roster_data:
                     team_rosters, player_team_map = process_team_rosters(roster_data, teams_data, espn_df)
@@ -479,10 +217,12 @@ with st.sidebar:
                 st.error("Failed to fetch ESPN player data.")
 
 with st.spinner('Loading pitcher projections...'):
-    pitcher_df = fetch_projections('pitcher')
+    pitcher_data = FanGraphsService.fetch_projections('pitcher')
+    pitcher_df = process_fangraphs_data(pitcher_data, 'pitcher')
 
 with st.spinner('Loading batter projections...'):
-    batter_df = fetch_projections('batter')
+    batter_data = FanGraphsService.fetch_projections('batter')
+    batter_df = process_fangraphs_data(batter_data, 'batter')
 
 with st.spinner('Analyzing team batting...'):
     team_batting = analyze_team_batting(batter_df).set_index('Team')
@@ -502,7 +242,7 @@ st.write(f"Found {len(rostered_pitcher_names)} rostered pitchers. Showing only f
 
 with st.spinner('Processing schedule data...'):
     for date in dates:
-        sched = fetch_schedule(date)
+        sched = MLBService.fetch_schedule(date)
         games = process_schedule(sched, pitcher_df, team_batting, rostered_pitcher_names)
         if not games.empty:
             games['Date'] = date
@@ -547,7 +287,7 @@ tabs = st.tabs(dates)
 for tab, date in zip(tabs, dates):
     with tab:
         with st.spinner(f'Loading matchups for {date}...'):
-            sched = fetch_schedule(date)
+            sched = MLBService.fetch_schedule(date)
             games = process_schedule(sched, pitcher_df, team_batting, rostered_pitcher_names)
             
             if not games.empty:
@@ -616,4 +356,4 @@ if not pitcher_df.empty:
         }
     )
 else:
-    st.error("Unable to load pitcher projections") 
+    st.error("Unable to load pitcher projections")

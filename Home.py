@@ -1,4 +1,8 @@
 import streamlit as st
+from utils.logging_utils import setup_logging
+
+# Setup logging
+logger = setup_logging()
 
 # Set page config
 st.set_page_config(
@@ -13,5 +17,9 @@ st.markdown("""
 Welcome to the Fantasy Baseball Analysis tool! Use the sidebar to navigate between different analysis pages:
 
 - **Pitcher Streaming**: Analyze pitcher matchups and streaming opportunities
-- **Team Rosters**: View and analyze team rosters from your ESPN league
+- **Waiver Wire Analyzer**: Find valuable players on the waiver wire
 """)
+
+# Add version info
+st.sidebar.markdown("---")
+st.sidebar.info("Fantasy Baseball Analysis v1.0.0")
