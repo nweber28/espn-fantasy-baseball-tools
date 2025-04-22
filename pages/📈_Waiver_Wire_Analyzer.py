@@ -460,57 +460,173 @@ if espn_data:
     # Get all available team abbreviations
     available_teams = sorted([team for team in simplified_df['Team'].dropna().unique() if isinstance(team, str) and team.strip()])
     
-    # Display roster section if teams are available
+    # Optimized Roster section
     if available_teams:
-        st.header("🏆 Team Roster")
+        st.header("🧙‍♂️ Optimized Roster")
         
         # Team abbreviation filter
         selected_team = st.selectbox(
             "Select Team:", 
             options=available_teams,
             index=0 if available_teams else None,
-            help="Filter roster by team abbreviation"
+            help="View optimized roster for selected team"
         )
         
         # Filter for selected team
         if selected_team:
-            team_roster_df = simplified_df[simplified_df['Team'] == selected_team].copy()
+            team_roster = simplified_df[simplified_df['Team'] == selected_team].copy()
             
-            if not team_roster_df.empty:
-                # Sort by projected points and position
-                team_roster_df = team_roster_df.sort_values(['Projected Points'], ascending=[False]).reset_index(drop=True)
+            if not team_roster.empty:
+                # Define roster slot structure
+                roster_slots = {
+                    "C": 1,
+                    "1B": 1,
+                    "2B": 1, 
+                    "3B": 1,
+                    "SS": 1,
+                    "OF": 3,
+                    "UTIL": 1,  # Any hitter
+                    "P": 7      # Any pitcher (SP or RP) - 7 total pitcher slots
+                }
                 
-                # Display team roster table
-                st.subheader(f"{selected_team} Roster")
+                # Process the team roster to extract position eligibility
+                processed_roster = []
+                for _, player in team_roster.iterrows():
+                    # Split the positions string into a list
+                    positions = [pos.strip() for pos in player['Eligible Positions'].split(',') if pos.strip()]
+                    
+                    # Determine player type (hitter or pitcher)
+                    is_pitcher = any(pos in ["SP", "RP", "P"] for pos in positions)
+                    is_hitter = any(pos in ["C", "1B", "2B", "3B", "SS", "OF", "DH"] for pos in positions)
+                    
+                    processed_roster.append({
+                        'name': player['Name'],
+                        'positions': positions,
+                        'projected_points': player['Projected Points'] if not pd.isna(player['Projected Points']) else 0,
+                        'is_pitcher': is_pitcher,
+                        'is_hitter': is_hitter
+                    })
                 
-                # Create a view without Percent Owned and Team columns
-                roster_display_df = team_roster_df[['Name', 'Eligible Positions', 'Projected Points']].copy()
+                # Roster optimization function
+                def optimize_roster(players, slots):
+                    # Sort players by projected points (highest first)
+                    sorted_players = sorted(players, key=lambda p: p['projected_points'], reverse=True)
+                    
+                    # Initialize assigned slots
+                    assignments = {position: [] for position in slots.keys()}
+                    assignments["BN"] = []  # Bench
+                    
+                    # Track which players have been assigned
+                    assigned_players = set()
+                    
+                    # First pass - try to fill each position with the best available player
+                    for position, count in slots.items():
+                        eligible_players = [
+                            p for p in sorted_players 
+                            if p['name'] not in assigned_players and 
+                                (position in p['positions'] or 
+                                (position == "UTIL" and p['is_hitter']) or
+                                (position == "P" and p['is_pitcher']))
+                        ]
+                        
+                        # Assign up to 'count' players to this position
+                        for i in range(min(count, len(eligible_players))):
+                            assignments[position].append(eligible_players[i])
+                            assigned_players.add(eligible_players[i]['name'])
+                    
+                    # Assign remaining players to bench
+                    for player in sorted_players:
+                        if player['name'] not in assigned_players:
+                            assignments["BN"].append(player)
+                            assigned_players.add(player['name'])
+                    
+                    return assignments
                 
+                # Run the optimization
+                with st.spinner("Optimizing roster..."):
+                    optimized_roster = optimize_roster(processed_roster, roster_slots)
+                
+                # Display the optimized roster
+                st.write("### Optimized Starting Lineup")
+                
+                # Display starters by position
+                starting_slots = []
+                for position, count in roster_slots.items():
+                    players_at_position = optimized_roster[position]
+                    for i in range(min(count, len(players_at_position))):
+                        player = players_at_position[i]
+                        # For pitchers, show their actual position (SP or RP) if available
+                        display_position = position
+                        if position == "P" and ("SP" in player["positions"] or "RP" in player["positions"]):
+                            if "SP" in player["positions"]:
+                                display_position = "SP"
+                            elif "RP" in player["positions"]:
+                                display_position = "RP"
+                        
+                        starting_slots.append({
+                            "Position": display_position,
+                            "Name": player["name"],
+                            "Eligible Positions": ", ".join(player["positions"]),
+                            "Projected Points": player["projected_points"]
+                        })
+                
+                # Sort the starters by position order for display
+                position_order = ["C", "1B", "2B", "3B", "SS", "OF", "UTIL", "SP", "RP", "P"]
+                position_rank = {pos: i for i, pos in enumerate(position_order)}
+                
+                starting_slots_df = pd.DataFrame(starting_slots)
+                # Handle cases where display_position might not be in position_rank
+                starting_slots_df["PositionRank"] = starting_slots_df["Position"].apply(
+                    lambda x: position_rank.get(x, position_rank.get("P", 9))
+                )
+                starting_slots_df = starting_slots_df.sort_values("PositionRank").drop("PositionRank", axis=1)
+                
+                # Display starters
                 st.dataframe(
-                    roster_display_df, 
+                    starting_slots_df,
                     use_container_width=True,
                     column_config={
-                        "Name": st.column_config.TextColumn("Name"),
-                        "Eligible Positions": st.column_config.TextColumn("Positions"),
-                        "Projected Points": st.column_config.NumberColumn("Proj. Points", format="%.1f"),
+                        "Position": st.column_config.TextColumn("Pos"),
+                        "Name": st.column_config.TextColumn("Player Name"),
+                        "Eligible Positions": st.column_config.TextColumn("Eligible At"),
+                        "Projected Points": st.column_config.NumberColumn("Proj. Points", format="%.1f")
                     }
                 )
                 
-                # Calculate team stats
-                total_players = len(team_roster_df)
-                total_points = team_roster_df['Projected Points'].sum()
-                avg_points = team_roster_df['Projected Points'].mean()
+                # Display bench players
+                st.write("### Bench Players")
+                bench_players = [{
+                    "Name": player["name"],
+                    "Eligible Positions": ", ".join(player["positions"]),
+                    "Projected Points": player["projected_points"]
+                } for player in optimized_roster["BN"]]
                 
-                # Display team stats in columns
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total Players", f"{total_players}")
-                with col2:
-                    st.metric("Total Projected Points", f"{total_points:.1f}")
-                with col3:
-                    st.metric("Avg. Proj. Points/Player", f"{avg_points:.1f}")
+                bench_df = pd.DataFrame(bench_players)
+                
+                if not bench_df.empty:
+                    st.dataframe(
+                        bench_df,
+                        use_container_width=True,
+                        column_config={
+                            "Name": st.column_config.TextColumn("Player Name"),
+                            "Eligible Positions": st.column_config.TextColumn("Eligible At"),
+                            "Projected Points": st.column_config.NumberColumn("Proj. Points", format="%.1f")
+                        }
+                    )
+                else:
+                    st.info("No bench players available")
+                
+                # Calculate team statistics
+                total_projected_points = sum(player["projected_points"] for position, players in optimized_roster.items() 
+                                           if position != "BN" for player in players)
+                
+                st.metric("Total Projected Points (Starting Lineup)", f"{total_projected_points:.1f}")
             else:
                 st.info(f"No players found for team {selected_team}")
+        else:
+            st.info("Please select a team to view the optimized roster")
+    else:
+        st.info("No teams available. Please enter a valid League ID.")
     
     # Free Agent Pool section
     st.header("🏄‍♂️ Free Agent Pool")
