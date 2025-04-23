@@ -18,8 +18,10 @@ Welcome to the Fantasy Baseball Analysis tool! Use the sidebar to navigate betwe
 
 - **Pitcher Streaming**: Analyze pitcher matchups and streaming opportunities
 - **Waiver Wire Analyzer**: Find valuable players on the waiver wire
+- **Trade Evaluator**: Compare players and evaluate potential trades
+- **Trade Evaluator**: Compare players and evaluate potential trades
 """)
 
 # Add version info
 st.sidebar.markdown("---")
-st.sidebar.info("Fantasy Baseball Analysis v1.0.0")
+st.sidebar.info("Fantasy Baseball Analysis v1.1.0")
