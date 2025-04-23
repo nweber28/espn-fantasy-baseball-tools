@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Optional, Tuple
 from utils.logging_utils import setup_logging
 from utils.data_processing import convert_positions, process_team_rosters, process_fangraphs_data
 from utils.name_utils import stem_name
+from utils.roster_utils import optimize_roster
 from services.espn_service import ESPNService
 from services.fangraphs_service import FanGraphsService
 from config.settings import DEFAULT_LEAGUE_ID, DEFAULT_ROSTER_SLOTS
@@ -30,50 +31,6 @@ st.set_page_config(
 
 # Title
 st.title("📈 Waiver Wire Analyzer")
-
-def optimize_roster(players: List[Dict[str, Any]], slots: Dict[str, int]) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Optimize a roster by assigning players to positions based on projected points.
-    
-    Args:
-        players: List of player dictionaries
-        slots: Dictionary of roster slots and counts
-        
-    Returns:
-        Dictionary of position assignments
-    """
-    # Sort players by projected points (highest first)
-    sorted_players = sorted(players, key=lambda p: p['projected_points'], reverse=True)
-    
-    # Initialize assigned slots
-    assignments = {position: [] for position in slots.keys()}
-    assignments["BN"] = []  # Bench
-    
-    # Track which players have been assigned
-    assigned_players = set()
-    
-    # First pass - try to fill each position with the best available player
-    for position, count in slots.items():
-        eligible_players = [
-            p for p in sorted_players 
-            if p['name'] not in assigned_players and 
-                (position in p['positions'] or 
-                (position == "UTIL" and p['is_hitter']) or
-                (position == "P" and p['is_pitcher']))
-        ]
-        
-        # Assign up to 'count' players to this position
-        for i in range(min(count, len(eligible_players))):
-            assignments[position].append(eligible_players[i])
-            assigned_players.add(eligible_players[i]['name'])
-    
-    # Assign remaining players to bench
-    for player in sorted_players:
-        if player['name'] not in assigned_players:
-            assignments["BN"].append(player)
-            assigned_players.add(player['name'])
-    
-    return assignments
 
 # Add league ID input in the sidebar
 with st.sidebar:
@@ -229,7 +186,7 @@ if espn_data:
                 
                 # Run the optimization
                 with st.spinner("Optimizing roster..."):
-                    optimized_roster = optimize_roster(processed_roster, DEFAULT_ROSTER_SLOTS)
+                    optimized_roster, _ = optimize_roster(processed_roster, DEFAULT_ROSTER_SLOTS)
                 
                 # Display the optimized roster
                 st.write("### Optimized Starting Lineup")
@@ -345,7 +302,7 @@ if espn_data:
                                     original_starters.add(player['name'])
                         
                         # Run optimization with combined roster
-                        optimized_combined = optimize_roster(combined_roster, DEFAULT_ROSTER_SLOTS)
+                        optimized_combined, _ = optimize_roster(combined_roster, DEFAULT_ROSTER_SLOTS)
                         
                         # Identify free agents who made it into the starting lineup
                         recommended_pickups = []
