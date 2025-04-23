@@ -52,7 +52,7 @@ class ESPNService:
             return None
     
     @staticmethod
-    @st.cache_data(ttl=3600, show_spinner=False)
+    @st.cache_data(ttl=3600)
     def fetch_teams_data(league_id: str, season_id: int = 2025) -> Optional[Dict[str, Any]]:
         """
         Fetch teams data for a specific league.
@@ -89,7 +89,7 @@ class ESPNService:
             return None
     
     @staticmethod
-    @st.cache_data(ttl=3600, show_spinner=False)
+    @st.cache_data(ttl=3600)
     def fetch_team_rosters(league_id: str, season_id: int = 2025) -> Optional[Dict[str, Any]]:
         """
         Fetch team rosters for a specific league.

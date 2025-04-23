@@ -221,7 +221,8 @@ with st.spinner('Loading pitcher projections...'):
     pitcher_df = process_fangraphs_data(pitcher_data, 'pitcher')
 
 with st.spinner('Loading batter projections...'):
-    batter_data = FanGraphsService.fetch_projections('batter')
+    # Use the streamer-specific point setup for batters when analyzing pitcher matchups
+    batter_data = FanGraphsService.fetch_projections('batter', for_streamer_analysis=True)
     batter_df = process_fangraphs_data(batter_data, 'batter')
 
 with st.spinner('Analyzing team batting...'):
