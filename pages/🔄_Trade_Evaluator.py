@@ -326,6 +326,9 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
     team1_all_players = data['combined'][data['combined']['Team Owner'] == team1].copy()
     team2_all_players = data['combined'][data['combined']['Team Owner'] == team2].copy()
     
+    # Get free agents for waiver wire analysis
+    free_agents_df = data['combined'][data['combined']['Team Owner'].isna() | (data['combined']['Team Owner'] == "")].copy()
+    
     # Convert to the format used by Waiver Wire Analyzer
     # Add Eligible Positions column to match Waiver Wire Analyzer format
     team1_all_players['Eligible Positions'] = team1_all_players['Positions']
@@ -333,6 +336,31 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
     
     team2_all_players['Eligible Positions'] = team2_all_players['Positions']
     team2_all_players['Projected Points'] = team2_all_players['ProjPts']
+    
+    free_agents_df['Eligible Positions'] = free_agents_df['Positions']
+    free_agents_df['Projected Points'] = free_agents_df['ProjPts']
+    
+    # Process free agents for optimization
+    from utils.waiver_utils import analyze_post_trade_waiver_options
+    
+    # Process free agents directly (since we removed the simple utility function)
+    processed_free_agents = []
+    for _, player in free_agents_df.iterrows():
+        # Split the positions string into a list
+        positions = [pos.strip() for pos in player['Eligible Positions'].split(',') if pos.strip()]
+        
+        # Determine player type (hitter or pitcher)
+        is_pitcher = any(pos in ["SP", "RP", "P"] for pos in positions)
+        is_hitter = any(pos in ["C", "1B", "2B", "3B", "SS", "OF", "DH"] for pos in positions)
+        
+        processed_free_agents.append({
+            'name': player['Name'],
+            'positions': positions,
+            'projected_points': player['Projected Points'] if not pd.isna(player['Projected Points']) else 0,
+            'is_pitcher': is_pitcher,
+            'is_hitter': is_hitter,
+            'percent_owned': player.get('Percent Owned', 0)
+        })
     
     # Prepare current rosters
     team1_current_players = prepare_players_for_optimization(team1_all_players)
@@ -366,6 +394,40 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
     team1_strength_diff = team1_post_trade_strength - team1_current_strength
     team2_strength_diff = team2_post_trade_strength - team2_current_strength
     
+    # Analyze post-trade waiver options
+    team1_with_waivers_roster, team1_recommendations, team1_with_waivers_strength = analyze_post_trade_waiver_options(
+        team1_post_trade_players, processed_free_agents, DEFAULT_ROSTER_SLOTS
+    )
+    
+    team2_with_waivers_roster, team2_recommendations, team2_with_waivers_strength = analyze_post_trade_waiver_options(
+        team2_post_trade_players, processed_free_agents, DEFAULT_ROSTER_SLOTS
+    )
+    
+    # Calculate strength with waiver pickups
+    team1_waiver_diff = team1_with_waivers_strength - team1_post_trade_strength
+    team2_waiver_diff = team2_with_waivers_strength - team2_post_trade_strength
+    
+    # Calculate total impact including waiver pickups
+    team1_total_diff = team1_with_waivers_strength - team1_current_strength
+    team2_total_diff = team2_with_waivers_strength - team2_current_strength
+    team2_post_trade_players = [p for p in team2_current_players if p['name'] not in team2_giving_names]
+    
+    # Get players being received
+    team1_receiving = prepare_players_for_optimization(team2_all_players[team2_all_players['Name'].isin(team2_giving_names)])
+    team2_receiving = prepare_players_for_optimization(team1_all_players[team1_all_players['Name'].isin(team1_giving_names)])
+    
+    # Add received players to post-trade rosters
+    team1_post_trade_players.extend(team1_receiving)
+    team2_post_trade_players.extend(team2_receiving)
+    
+    # Optimize post-trade rosters
+    team1_post_trade_roster, team1_post_trade_strength = optimize_roster(team1_post_trade_players, DEFAULT_ROSTER_SLOTS)
+    team2_post_trade_roster, team2_post_trade_strength = optimize_roster(team2_post_trade_players, DEFAULT_ROSTER_SLOTS)
+    
+    # Calculate strength differences
+    team1_strength_diff = team1_post_trade_strength - team1_current_strength
+    team2_strength_diff = team2_post_trade_strength - team2_current_strength
+    
     # Display results
     st.subheader("Roster Strength Impact")
     
@@ -373,29 +435,136 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
     
     with col1:
         st.write(f"### {team1}")
-        st.metric("Current Roster Strength", f"{team1_current_strength:.1f}")
-        st.metric("Post-Trade Roster Strength", f"{team1_post_trade_strength:.1f}", 
-                 delta=f"{team1_strength_diff:.1f}")
+        
+        # Create metrics in a container for better visual grouping
+        with st.container():
+            st.metric("Current Roster Strength", f"{team1_current_strength:.1f}")
+            st.metric("Post-Trade Roster Strength", f"{team1_post_trade_strength:.1f}", 
+                    delta=f"{team1_strength_diff:.1f}")
+            
+            if team1_recommendations:
+                st.metric("With Waiver Pickups", f"{team1_with_waivers_strength:.1f}", 
+                        delta=f"{team1_waiver_diff:.1f}")
+                st.metric("Total Impact", f"{team1_total_diff:.1f}", 
+                        delta=f"{team1_total_diff:.1f}")
+                
+                if team1_waiver_diff > 0:
+                    st.success(f"By making the recommended waiver pickups, {team1} can gain an additional {team1_waiver_diff:.1f} points!")
     
     with col2:
         st.write(f"### {team2}")
-        st.metric("Current Roster Strength", f"{team2_current_strength:.1f}")
-        st.metric("Post-Trade Roster Strength", f"{team2_post_trade_strength:.1f}", 
-                 delta=f"{team2_strength_diff:.1f}")
+        
+        # Create metrics in a container for better visual grouping
+        with st.container():
+            st.metric("Current Roster Strength", f"{team2_current_strength:.1f}")
+            st.metric("Post-Trade Roster Strength", f"{team2_post_trade_strength:.1f}", 
+                    delta=f"{team2_strength_diff:.1f}")
+            
+            if team2_recommendations:
+                st.metric("With Waiver Pickups", f"{team2_with_waivers_strength:.1f}", 
+                        delta=f"{team2_waiver_diff:.1f}")
+                st.metric("Total Impact", f"{team2_total_diff:.1f}", 
+                        delta=f"{team2_total_diff:.1f}")
+                
+                if team2_waiver_diff > 0:
+                    st.success(f"By making the recommended waiver pickups, {team2} can gain an additional {team2_waiver_diff:.1f} points!")
+    
+    # Waiver Wire Recommendations
+    if team1_recommendations or team2_recommendations:
+        st.subheader("Recommended Waiver Wire Pickups")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write(f"### {team1}")
+            if team1_recommendations:
+                # Create DataFrame for display
+                recommendations_df = pd.DataFrame(team1_recommendations)
+                
+                # Add a plus sign to positive values for display
+                recommendations_df['Display Improvement'] = recommendations_df['Proj. Points Improvement'].apply(
+                    lambda x: f"+{x:.1f}" if x > 0 else f"{x:.1f}"
+                )
+                
+                # Remove the original numeric column and keep only the display version
+                recommendations_df = recommendations_df.drop(columns=['Proj. Points Improvement'])
+                
+                st.dataframe(
+                    recommendations_df,
+                    use_container_width=True,
+                    column_config={
+                        "Add": st.column_config.TextColumn("Add Player"),
+                        "Position": st.column_config.TextColumn("Position"),
+                        "Drop": st.column_config.TextColumn("Drop Player"),
+                        "Display Improvement": st.column_config.TextColumn("Pts Improvement"),
+                        "FA Percent Owned": st.column_config.NumberColumn("% Owned", format="%.2f")
+                    }
+                )
+            else:
+                st.info("No recommended free agent pickups found to improve the roster.")
+        
+        with col2:
+            st.write(f"### {team2}")
+            if team2_recommendations:
+                # Create DataFrame for display
+                recommendations_df = pd.DataFrame(team2_recommendations)
+                
+                # Add a plus sign to positive values for display
+                recommendations_df['Display Improvement'] = recommendations_df['Proj. Points Improvement'].apply(
+                    lambda x: f"+{x:.1f}" if x > 0 else f"{x:.1f}"
+                )
+                
+                # Remove the original numeric column and keep only the display version
+                recommendations_df = recommendations_df.drop(columns=['Proj. Points Improvement'])
+                
+                st.dataframe(
+                    recommendations_df,
+                    use_container_width=True,
+                    column_config={
+                        "Add": st.column_config.TextColumn("Add Player"),
+                        "Position": st.column_config.TextColumn("Position"),
+                        "Drop": st.column_config.TextColumn("Drop Player"),
+                        "Display Improvement": st.column_config.TextColumn("Pts Improvement"),
+                        "FA Percent Owned": st.column_config.NumberColumn("% Owned", format="%.2f")
+                    }
+                )
+            else:
+                st.info("No recommended free agent pickups found to improve the roster.")
     
     # Overall trade analysis
     st.subheader("Trade Verdict")
     
-    if team1_strength_diff > 0 and team2_strength_diff > 0:
-        st.success("This trade benefits both teams! It's a win-win.")
-    elif team1_strength_diff < 0 and team2_strength_diff < 0:
-        st.warning("This trade hurts both teams. Consider revising.")
-    elif abs(team1_strength_diff - team2_strength_diff) < 3:
-        st.success("This trade is fairly balanced, with similar impact on both teams.")
-    elif team1_strength_diff > team2_strength_diff:
-        st.warning(f"{team1} gains more from this trade (+{team1_strength_diff:.1f} vs +{team2_strength_diff:.1f}).")
-    else:
-        st.warning(f"{team2} gains more from this trade (+{team2_strength_diff:.1f} vs +{team1_strength_diff:.1f}).")
+    # Create tabs for different analysis views
+    verdict_tabs = st.tabs(["With Waiver Wire", "Trade Only"])
+    
+    with verdict_tabs[0]:
+        # Analyze the trade with waiver wire considerations
+        if team1_recommendations or team2_recommendations:
+            if team1_total_diff > 0 and team2_total_diff > 0:
+                st.success("This trade benefits both teams when considering waiver wire pickups! It's a win-win.")
+            elif team1_total_diff < 0 and team2_total_diff < 0:
+                st.warning("This trade hurts both teams even with waiver wire pickups. Consider revising.")
+            elif abs(team1_total_diff - team2_total_diff) < 3:
+                st.success("This trade is fairly balanced when including waiver wire pickups, with similar impact on both teams.")
+            elif team1_total_diff > team2_total_diff:
+                st.warning(f"{team1} gains more from this trade (+{team1_total_diff:.1f} vs +{team2_total_diff:.1f}) when including waiver wire pickups.")
+            else:
+                st.warning(f"{team2} gains more from this trade (+{team2_total_diff:.1f} vs +{team1_total_diff:.1f}) when including waiver wire pickups.")
+        else:
+            st.info("No waiver wire pickups would improve either team after this trade.")
+    
+    with verdict_tabs[1]:
+        # Analyze the trade without waiver wire considerations
+        if team1_strength_diff > 0 and team2_strength_diff > 0:
+            st.success("This trade benefits both teams! It's a win-win.")
+        elif team1_strength_diff < 0 and team2_strength_diff < 0:
+            st.warning("This trade hurts both teams. Consider revising.")
+        elif abs(team1_strength_diff - team2_strength_diff) < 3:
+            st.success("This trade is fairly balanced, with similar impact on both teams.")
+        elif team1_strength_diff > team2_strength_diff:
+            st.warning(f"{team1} gains more from this trade (+{team1_strength_diff:.1f} vs +{team2_strength_diff:.1f}).")
+        else:
+            st.warning(f"{team2} gains more from this trade (+{team2_strength_diff:.1f} vs +{team1_strength_diff:.1f}).")
     
     # Display detailed roster analysis if enabled
     if show_detailed_rosters:
@@ -404,15 +573,19 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
         # Create DataFrames for current and post-trade rosters
         team1_current_df = roster_to_dataframe(team1_current_roster)
         team1_post_trade_df = roster_to_dataframe(team1_post_trade_roster)
+        team1_with_waivers_df = roster_to_dataframe(team1_with_waivers_roster)
+        
         team2_current_df = roster_to_dataframe(team2_current_roster)
         team2_post_trade_df = roster_to_dataframe(team2_post_trade_roster)
+        team2_with_waivers_df = roster_to_dataframe(team2_with_waivers_roster)
         
         # Display Team 1's roster changes
         st.subheader(f"{team1} Roster Changes")
-        col1, col2 = st.columns(2)
         
-        with col1:
-            st.write("#### Current Roster")
+        # Use tabs for different roster views
+        team1_tabs = st.tabs(["Current Roster", "Post-Trade Roster", "With Waiver Pickups"])
+        
+        with team1_tabs[0]:
             st.dataframe(
                 team1_current_df,
                 hide_index=True,
@@ -424,8 +597,7 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
                 }
             )
         
-        with col2:
-            st.write("#### Post-Trade Roster")
+        with team1_tabs[1]:
             st.dataframe(
                 team1_post_trade_df,
                 hide_index=True,
@@ -437,12 +609,25 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
                 }
             )
         
+        with team1_tabs[2]:
+            st.dataframe(
+                team1_with_waivers_df,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Position": st.column_config.TextColumn("Position"),
+                    "Player": st.column_config.TextColumn("Player"),
+                    "Projected Points": st.column_config.NumberColumn("Projected Points", format="%.1f")
+                }
+            )
+        
         # Display Team 2's roster changes
         st.subheader(f"{team2} Roster Changes")
-        col1, col2 = st.columns(2)
         
-        with col1:
-            st.write("#### Current Roster")
+        # Use tabs for different roster views
+        team2_tabs = st.tabs(["Current Roster", "Post-Trade Roster", "With Waiver Pickups"])
+        
+        with team2_tabs[0]:
             st.dataframe(
                 team2_current_df,
                 hide_index=True,
@@ -454,10 +639,21 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
                 }
             )
         
-        with col2:
-            st.write("#### Post-Trade Roster")
+        with team2_tabs[1]:
             st.dataframe(
                 team2_post_trade_df,
+                hide_index=True,
+                use_container_width=True,
+                column_config={
+                    "Position": st.column_config.TextColumn("Position"),
+                    "Player": st.column_config.TextColumn("Player"),
+                    "Projected Points": st.column_config.NumberColumn("Projected Points", format="%.1f")
+                }
+            )
+        
+        with team2_tabs[2]:
+            st.dataframe(
+                team2_with_waivers_df,
                 hide_index=True,
                 use_container_width=True,
                 column_config={
@@ -474,11 +670,15 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
         team1_added, team1_removed, team1_changes = identify_roster_changes(team1_current_df, team1_post_trade_df)
         team2_added, team2_removed, team2_changes = identify_roster_changes(team2_current_df, team2_post_trade_df)
         
+        # Identify changes with waiver pickups
+        team1_waiver_added, team1_waiver_removed, team1_waiver_changes = identify_roster_changes(team1_post_trade_df, team1_with_waivers_df)
+        team2_waiver_added, team2_waiver_removed, team2_waiver_changes = identify_roster_changes(team2_post_trade_df, team2_with_waivers_df)
+        
         col1, col2 = st.columns(2)
         
         with col1:
-            st.write(f"#### {team1} Changes")
-            st.write("**Added to Roster:**")
+            st.write(f"#### {team1} Trade Changes")
+            st.write("**Added from Trade:**")
             if team1_added:
                 for player in team1_added:
                     pos = team1_post_trade_df[team1_post_trade_df["Player"] == player]["Position"].iloc[0]
@@ -487,7 +687,7 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
             else:
                 st.write("- None")
                 
-            st.write("**Removed from Roster:**")
+            st.write("**Removed from Trade:**")
             if team1_removed:
                 for player in team1_removed:
                     pos = team1_current_df[team1_current_df["Player"] == player]["Position"].iloc[0]
@@ -495,17 +695,17 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
                     st.write(f"- {player} ({pos}): {pts:.1f} pts")
             else:
                 st.write("- None")
-                
-            st.write("**Position Changes:**")
-            if team1_changes:
-                for change in team1_changes:
-                    st.write(f"- {change['Player']}: {change['Before']} → {change['After']}")
-            else:
-                st.write("- None")
+            
+            if team1_waiver_added:
+                st.write("**Added from Waivers:**")
+                for player in team1_waiver_added:
+                    pos = team1_with_waivers_df[team1_with_waivers_df["Player"] == player]["Position"].iloc[0]
+                    pts = team1_with_waivers_df[team1_with_waivers_df["Player"] == player]["Projected Points"].iloc[0]
+                    st.write(f"- {player} ({pos}): {pts:.1f} pts")
         
         with col2:
-            st.write(f"#### {team2} Changes")
-            st.write("**Added to Roster:**")
+            st.write(f"#### {team2} Trade Changes")
+            st.write("**Added from Trade:**")
             if team2_added:
                 for player in team2_added:
                     pos = team2_post_trade_df[team2_post_trade_df["Player"] == player]["Position"].iloc[0]
@@ -514,7 +714,7 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
             else:
                 st.write("- None")
                 
-            st.write("**Removed from Roster:**")
+            st.write("**Removed from Trade:**")
             if team2_removed:
                 for player in team2_removed:
                     pos = team2_current_df[team2_current_df["Player"] == player]["Position"].iloc[0]
@@ -522,13 +722,13 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
                     st.write(f"- {player} ({pos}): {pts:.1f} pts")
             else:
                 st.write("- None")
-                
-            st.write("**Position Changes:**")
-            if team2_changes:
-                for change in team2_changes:
-                    st.write(f"- {change['Player']}: {change['Before']} → {change['After']}")
-            else:
-                st.write("- None")
+            
+            if team2_waiver_added:
+                st.write("**Added from Waivers:**")
+                for player in team2_waiver_added:
+                    pos = team2_with_waivers_df[team2_with_waivers_df["Player"] == player]["Position"].iloc[0]
+                    pts = team2_with_waivers_df[team2_with_waivers_df["Player"] == player]["Projected Points"].iloc[0]
+                    st.write(f"- {player} ({pos}): {pts:.1f} pts")
     
     # Add a button to clear selections
     if st.button("Clear Selections"):

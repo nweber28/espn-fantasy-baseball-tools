@@ -19,5 +19,6 @@ DEFAULT_ROSTER_SLOTS = {
     "SS": 1,
     "OF": 3,
     "UTIL": 1,
-    "P": 7
+    "P": 7,
+    "BN": 3  # Explicitly define bench slots
 }

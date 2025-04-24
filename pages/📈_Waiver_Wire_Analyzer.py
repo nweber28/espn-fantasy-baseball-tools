@@ -13,6 +13,7 @@ from utils.logging_utils import setup_logging
 from utils.data_processing import convert_positions, process_team_rosters, process_fangraphs_data
 from utils.name_utils import stem_name
 from utils.roster_utils import optimize_roster
+from utils.waiver_utils import find_waiver_replacements
 from services.espn_service import ESPNService
 from services.fangraphs_service import FanGraphsService
 from config.settings import DEFAULT_LEAGUE_ID, DEFAULT_ROSTER_SLOTS
@@ -294,80 +295,17 @@ if espn_data:
                         # Combine team roster with free agents
                         combined_roster = processed_roster + processed_free_agents
                         
-                        # Save original optimal lineup for comparison
-                        original_starters = set()
-                        for position, players in optimized_roster.items():
-                            if position != "BN":
-                                for player in players:
-                                    original_starters.add(player['name'])
-                        
                         # Run optimization with combined roster
                         optimized_combined, _ = optimize_roster(combined_roster, DEFAULT_ROSTER_SLOTS)
                         
-                        # Identify free agents who made it into the starting lineup
-                        recommended_pickups = []
-                        
-                        # Get new starters
-                        new_starters = set()
-                        new_starter_details = {}
-                        for position, players in optimized_combined.items():
-                            if position != "BN":
-                                for player in players:
-                                    new_starters.add(player['name'])
-                                    new_starter_details[player['name']] = {
-                                        'position': position,
-                                        'projected_points': player['projected_points']
-                                    }
-                        
-                        # Find free agents who made it into starting lineup
-                        free_agent_names = {player['name'] for player in processed_free_agents}
-                        recommended_free_agents = new_starters.intersection(free_agent_names)
-                        
-                        # Identify who they would replace
-                        replaced_players = original_starters - new_starters
-                        
-                        # Create recommendations with details
-                        for fa_name in recommended_free_agents:
-                            # Find the free agent in the processed free agents list
-                            fa = next((p for p in processed_free_agents if p['name'] == fa_name), None)
-                            
-                            if fa:
-                                # Find position they'd play
-                                position = new_starter_details[fa_name]['position']
-                                
-                                # Find who they replace (player at same position not in new lineup)
-                                potential_replacements = []
-                                for original_player in processed_roster:
-                                    # Check if the player is not in the new starters
-                                    if original_player['name'] not in new_starters:
-                                        # Check if they can play the same position
-                                        if position in original_player['positions'] or \
-                                           (position == "UTIL" and original_player['is_hitter']) or \
-                                           (position == "P" and original_player['is_pitcher']):
-                                            potential_replacements.append({
-                                                'name': original_player['name'],
-                                                'projected_points': original_player['projected_points']
-                                            })
-                                
-                                # Sort by projected points to find the most likely replacement
-                                if potential_replacements:
-                                    potential_replacements.sort(key=lambda p: p['projected_points'], reverse=True)
-                                    replaced_player = potential_replacements[0]
-                                    
-                                    # Calculate projected points improvement
-                                    improvement = fa['projected_points'] - replaced_player['projected_points']
-                                    
-                                    if improvement > 0:
-                                        recommended_pickups.append({
-                                            'Add': fa_name,
-                                            'Position': position,
-                                            'Drop': replaced_player['name'],
-                                            'Proj. Points Improvement': improvement,
-                                            'FA Percent Owned': fa['percent_owned']
-                                        })
-                        
-                        # Sort recommendations by projected points improvement
-                        recommended_pickups.sort(key=lambda r: r['Proj. Points Improvement'], reverse=True)
+                        # Use the waiver_utils function to find recommended pickups
+                        from utils.waiver_utils import find_waiver_replacements
+                        recommended_pickups = find_waiver_replacements(
+                            optimized_roster,
+                            optimized_combined,
+                            processed_roster,
+                            processed_free_agents
+                        )
                         
                         # Display recommendations
                         if recommended_pickups:

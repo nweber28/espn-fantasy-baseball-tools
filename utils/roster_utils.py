@@ -32,6 +32,9 @@ def optimize_roster(players: List[Dict[str, Any]], slots: Dict[str, int]) -> Tup
     
     # First pass - try to fill each position with the best available player
     for position, count in slots.items():
+        if position == "BN":  # Skip bench for now
+            continue
+            
         eligible_players = [
             p for p in sorted_players 
             if p['name'] not in assigned_players and 
@@ -46,11 +49,15 @@ def optimize_roster(players: List[Dict[str, Any]], slots: Dict[str, int]) -> Tup
             assigned_players.add(eligible_players[i]['name'])
             total_points += eligible_players[i]['projected_points']
     
-    # Assign remaining players to bench
+    # Assign remaining players to bench, up to the bench limit
+    bench_limit = slots.get("BN", 3)  # Default to 3 bench spots if not specified
+    bench_count = 0
+    
     for player in sorted_players:
-        if player['name'] not in assigned_players:
+        if player['name'] not in assigned_players and bench_count < bench_limit:
             assignments["BN"].append(player)
             assigned_players.add(player['name'])
+            bench_count += 1
     
     return assignments, total_points
 
