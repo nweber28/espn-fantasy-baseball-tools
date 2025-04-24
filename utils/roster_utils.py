@@ -3,6 +3,9 @@ Roster optimization utilities for fantasy baseball analysis.
 """
 from typing import Dict, Any, List, Tuple
 
+# Define injury statuses that make a player eligible for IL
+IL_ELIGIBLE_STATUSES = ["TEN_DAY_DL", "SUSPENSION", "SIXTY_DAY_DL", "OUT", "FIFTEEN_DAY_DL"]
+
 def optimize_roster(players: List[Dict[str, Any]], slots: Dict[str, int]) -> Tuple[Dict[str, List[Dict[str, Any]]], float]:
     """
     Optimize a roster by assigning players to positions based on projected points.
@@ -14,6 +17,7 @@ def optimize_roster(players: List[Dict[str, Any]], slots: Dict[str, int]) -> Tup
             - projected_points: Projected fantasy points
             - is_pitcher: Boolean indicating if player is a pitcher
             - is_hitter: Boolean indicating if player is a hitter
+            - injury_status: Player's injury status (optional)
         slots: Dictionary of roster slots and counts
         
     Returns:
@@ -25,12 +29,28 @@ def optimize_roster(players: List[Dict[str, Any]], slots: Dict[str, int]) -> Tup
     # Initialize assigned slots
     assignments = {position: [] for position in slots.keys()}
     assignments["BN"] = []  # Bench
+    assignments["IL"] = []  # Injured List
     
     # Track which players have been assigned
     assigned_players = set()
     total_points = 0
     
-    # First pass - try to fill each position with the best available player
+    # First pass - assign IL-eligible players to IL slots
+    il_limit = 3  # ESPN Fantasy allows 3 IL slots
+    
+    # Filter players eligible for IL
+    il_eligible_players = [
+        p for p in sorted_players 
+        if p.get('injury_status') in IL_ELIGIBLE_STATUSES
+    ]
+    
+    # Assign players to IL slots
+    for i in range(min(il_limit, len(il_eligible_players))):
+        assignments["IL"].append(il_eligible_players[i])
+        assigned_players.add(il_eligible_players[i]['name'])
+        # Note: IL players don't contribute to total points
+    
+    # Second pass - try to fill each position with the best available player
     for position, count in slots.items():
         if position == "BN":  # Skip bench for now
             continue
@@ -38,6 +58,7 @@ def optimize_roster(players: List[Dict[str, Any]], slots: Dict[str, int]) -> Tup
         eligible_players = [
             p for p in sorted_players 
             if p['name'] not in assigned_players and 
+                p.get('injury_status') not in IL_ELIGIBLE_STATUSES and  # Skip IL-eligible players
                 (position in p['positions'] or 
                 (position == "UTIL" and p['is_hitter']) or
                 (position == "P" and p['is_pitcher']))
@@ -55,7 +76,11 @@ def optimize_roster(players: List[Dict[str, Any]], slots: Dict[str, int]) -> Tup
     
     for player in sorted_players:
         if player['name'] not in assigned_players and bench_count < bench_limit:
-            assignments["BN"].append(player)
+            # Don't put IL-eligible players on bench if we have IL slots available
+            if player.get('injury_status') in IL_ELIGIBLE_STATUSES and len(assignments["IL"]) < il_limit:
+                assignments["IL"].append(player)
+            else:
+                assignments["BN"].append(player)
             assigned_players.add(player['name'])
             bench_count += 1
     
@@ -76,7 +101,7 @@ def roster_to_dataframe(roster_dict):
     rows = []
     # Process starting positions first
     for position, players in roster_dict.items():
-        if position != "BN":  # Skip bench for now
+        if position != "BN" and position != "IL":  # Skip bench and IL for now
             for i, player in enumerate(players):
                 rows.append({
                     "Position": f"{position}{i+1}" if len(players) > 1 else position,
@@ -88,6 +113,14 @@ def roster_to_dataframe(roster_dict):
     for i, player in enumerate(roster_dict.get("BN", [])):
         rows.append({
             "Position": f"BN{i+1}",
+            "Player": player["name"],
+            "Projected Points": player["projected_points"]
+        })
+    
+    # Now add IL players
+    for i, player in enumerate(roster_dict.get("IL", [])):
+        rows.append({
+            "Position": f"IL{i+1}",
             "Player": player["name"],
             "Projected Points": player["projected_points"]
         })

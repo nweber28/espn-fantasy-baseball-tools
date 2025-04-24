@@ -140,7 +140,8 @@ if espn_data:
         'Percent Owned': filtered_espn_df['percent_owned'],
         'Eligible Positions': filtered_espn_df['eligibleSlots'].apply(convert_positions),
         'Projected Points': filtered_espn_df['projPts'].apply(lambda x: float(x) if pd.notnull(x) else None),
-        'Team': filtered_espn_df['team_name']
+        'Team': filtered_espn_df['team_name'],
+        'Injury Status': filtered_espn_df.get('injuryStatus')
     })
     
     # Sort by Projected Points (descending)
@@ -182,7 +183,8 @@ if espn_data:
                         'positions': positions,
                         'projected_points': player['Projected Points'] if not pd.isna(player['Projected Points']) else 0,
                         'is_pitcher': is_pitcher,
-                        'is_hitter': is_hitter
+                        'is_hitter': is_hitter,
+                        'injury_status': player['Injury Status']
                     })
                 
                 # Run the optimization
@@ -191,6 +193,34 @@ if espn_data:
                 
                 # Display the optimized roster
                 st.write("### Optimized Starting Lineup")
+                
+                # Display IL players first if any
+                if "IL" in optimized_roster and optimized_roster["IL"]:
+                    il_slots = []
+                    for player in optimized_roster["IL"]:
+                        il_slots.append({
+                            "Position": "IL",
+                            "Name": player["name"],
+                            "Eligible Positions": ", ".join(player["positions"]),
+                            "Projected Points": player["projected_points"],
+                            "Injury Status": player.get("injury_status")
+                        })
+                    
+                    il_df = pd.DataFrame(il_slots)
+                    st.write("#### Injured List")
+                    st.dataframe(
+                        il_df,
+                        use_container_width=True,
+                        column_config={
+                            "Position": st.column_config.TextColumn("Pos"),
+                            "Name": st.column_config.TextColumn("Player Name"),
+                            "Eligible Positions": st.column_config.TextColumn("Eligible At"),
+                            "Projected Points": st.column_config.NumberColumn("Proj. Points", format="%.1f"),
+                            "Injury Status": st.column_config.TextColumn("Status")
+                        }
+                    )
+                
+                st.write("#### Starting Lineup")
                 
                 # Display starters by position
                 starting_slots = []
@@ -210,7 +240,8 @@ if espn_data:
                             "Position": display_position,
                             "Name": player["name"],
                             "Eligible Positions": ", ".join(player["positions"]),
-                            "Projected Points": player["projected_points"]
+                            "Projected Points": player["projected_points"],
+                            "Injury Status": player.get("injury_status")
                         })
                 
                 # Sort the starters by position order for display
@@ -232,7 +263,8 @@ if espn_data:
                         "Position": st.column_config.TextColumn("Pos"),
                         "Name": st.column_config.TextColumn("Player Name"),
                         "Eligible Positions": st.column_config.TextColumn("Eligible At"),
-                        "Projected Points": st.column_config.NumberColumn("Proj. Points", format="%.1f")
+                        "Projected Points": st.column_config.NumberColumn("Proj. Points", format="%.1f"),
+                        "Injury Status": st.column_config.TextColumn("Status")
                     }
                 )
                 
@@ -241,7 +273,8 @@ if espn_data:
                 bench_players = [{
                     "Name": player["name"],
                     "Eligible Positions": ", ".join(player["positions"]),
-                    "Projected Points": player["projected_points"]
+                    "Projected Points": player["projected_points"],
+                    "Injury Status": player.get("injury_status")
                 } for player in optimized_roster["BN"]]
                 
                 bench_df = pd.DataFrame(bench_players)
@@ -253,7 +286,8 @@ if espn_data:
                         column_config={
                             "Name": st.column_config.TextColumn("Player Name"),
                             "Eligible Positions": st.column_config.TextColumn("Eligible At"),
-                            "Projected Points": st.column_config.NumberColumn("Proj. Points", format="%.1f")
+                            "Projected Points": st.column_config.NumberColumn("Proj. Points", format="%.1f"),
+                            "Injury Status": st.column_config.TextColumn("Status")
                         }
                     )
                 else:
@@ -261,7 +295,7 @@ if espn_data:
                 
                 # Calculate team statistics
                 total_projected_points = sum(player["projected_points"] for position, players in optimized_roster.items() 
-                                           if position != "BN" for player in players)
+                                           if position != "BN" and position != "IL" for player in players)
                 
                 st.metric("Total Projected Points (Starting Lineup)", f"{total_projected_points:.1f}")
                 
@@ -289,7 +323,8 @@ if espn_data:
                                 'projected_points': player['Projected Points'] if not pd.isna(player['Projected Points']) else 0,
                                 'is_pitcher': is_pitcher,
                                 'is_hitter': is_hitter,
-                                'percent_owned': player['Percent Owned']
+                                'percent_owned': player['Percent Owned'],
+                                'injury_status': player['Injury Status']  # Add injury status
                             })
                         
                         # Combine team roster with free agents
@@ -328,7 +363,8 @@ if espn_data:
                                     "Position": st.column_config.TextColumn("Position"),
                                     "Drop": st.column_config.TextColumn("Drop Player"),
                                     "Display Improvement": st.column_config.TextColumn("Pts Improvement"),
-                                    "FA Percent Owned": st.column_config.NumberColumn("% Owned", format="%.2f")
+                                    "FA Percent Owned": st.column_config.NumberColumn("% Owned", format="%.2f"),
+                                    "Injury Status": st.column_config.TextColumn("Status")
                                 }
                             )
                         else:

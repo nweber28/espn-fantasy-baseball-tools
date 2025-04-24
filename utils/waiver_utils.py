@@ -25,7 +25,7 @@ def find_waiver_replacements(
     # Save original optimal lineup for comparison
     original_starters = set()
     for position, players in original_roster.items():
-        if position != "BN":
+        if position != "BN" and position != "IL":  # Exclude bench and IL
             for player in players:
                 original_starters.add(player['name'])
     
@@ -33,12 +33,13 @@ def find_waiver_replacements(
     new_starters = set()
     new_starter_details = {}
     for position, players in combined_roster.items():
-        if position != "BN":
+        if position != "BN" and position != "IL":  # Exclude bench and IL
             for player in players:
                 new_starters.add(player['name'])
                 new_starter_details[player['name']] = {
                     'position': position,
-                    'projected_points': player['projected_points']
+                    'projected_points': player['projected_points'],
+                    'injury_status': player.get('injury_status')
                 }
     
     # Find free agents who made it into starting lineup
@@ -58,6 +59,10 @@ def find_waiver_replacements(
             # Find who they replace (player at same position not in new lineup)
             potential_replacements = []
             for original_player in processed_roster:
+                # Skip players who are IL-eligible as they shouldn't be dropped for healthy players
+                if original_player.get('injury_status') in ["TEN_DAY_DL", "SUSPENSION", "SIXTY_DAY_DL", "OUT", "FIFTEEN_DAY_DL"]:
+                    continue
+                    
                 # Check if the player is not in the new starters
                 if original_player['name'] not in new_starters:
                     # Check if they can play the same position
@@ -83,7 +88,8 @@ def find_waiver_replacements(
                         'Position': position,
                         'Drop': replaced_player['name'],
                         'Proj. Points Improvement': improvement,
-                        'FA Percent Owned': fa.get('percent_owned', 0)
+                        'FA Percent Owned': fa.get('percent_owned', 0),
+                        'Injury Status': fa.get('injury_status', '')
                     })
     
     # Sort recommendations by projected points improvement
