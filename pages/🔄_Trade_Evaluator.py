@@ -102,6 +102,20 @@ def load_player_data(league_id: str):
         
         # Process batters
         for _, batter in batter_df.iterrows():
+            # Get ESPN position eligibility if available
+            espn_positions = ""
+            if espn_df is not None and 'stemmed_name' in espn_df.columns:
+                matching_players = espn_df[espn_df['stemmed_name'] == batter['StemmedName']]
+                if not matching_players.empty:
+                    player_id = matching_players['id'].iloc[0]
+                    if player_id in player_team_map:
+                        # Use the positions from the team roster data (ESPN positions)
+                        team_id = player_team_map[player_id]['team_id']
+                        for player in team_rosters[team_id]['players']:
+                            if player['id'] == player_id:
+                                espn_positions = player['positions']
+                                break
+            
             player_info = {
                 'Name': batter['Name'],
                 'StemmedName': batter['StemmedName'],
@@ -110,12 +124,26 @@ def load_player_data(league_id: str):
                 'ProjPts': batter['ProjPts'],
                 'PlayerType': 'Batter',
                 'Team Owner': rostered_players.get(batter['StemmedName'], {}).get('team_name', None),
-                'Positions': rostered_players.get(batter['StemmedName'], {}).get('positions', '')
+                'Positions': espn_positions or rostered_players.get(batter['StemmedName'], {}).get('positions', '')
             }
             combined_players.append(player_info)
         
         # Process pitchers
         for _, pitcher in pitcher_df.iterrows():
+            # Get ESPN position eligibility if available
+            espn_positions = ""
+            if espn_df is not None and 'stemmed_name' in espn_df.columns:
+                matching_players = espn_df[espn_df['stemmed_name'] == pitcher['StemmedName']]
+                if not matching_players.empty:
+                    player_id = matching_players['id'].iloc[0]
+                    if player_id in player_team_map:
+                        # Use the positions from the team roster data (ESPN positions)
+                        team_id = player_team_map[player_id]['team_id']
+                        for player in team_rosters[team_id]['players']:
+                            if player['id'] == player_id:
+                                espn_positions = player['positions']
+                                break
+            
             player_info = {
                 'Name': pitcher['Name'],
                 'StemmedName': pitcher['StemmedName'],
@@ -124,7 +152,7 @@ def load_player_data(league_id: str):
                 'ProjPts': pitcher['ProjPts'],
                 'PlayerType': 'Pitcher',
                 'Team Owner': rostered_players.get(pitcher['StemmedName'], {}).get('team_name', None),
-                'Positions': rostered_players.get(pitcher['StemmedName'], {}).get('positions', '')
+                'Positions': espn_positions or rostered_players.get(pitcher['StemmedName'], {}).get('positions', '')
             }
             combined_players.append(player_info)
         
@@ -189,11 +217,11 @@ with team1_col:
     if not team1_players.empty:
         # Use data editor for team1
         edited_team1 = st.data_editor(
-            team1_players[['Selected', 'Name', 'Pos', 'ProjPts']],
+            team1_players[['Selected', 'Name', 'Positions', 'ProjPts']],
             column_config={
                 "Selected": st.column_config.CheckboxColumn("Select", help="Select player for trade"),
                 "Name": st.column_config.TextColumn("Player Name"),
-                "Pos": st.column_config.TextColumn("Position"),
+                "Positions": st.column_config.TextColumn("Position"),
                 "ProjPts": st.column_config.NumberColumn("Projected Points", format="%.1f")
             },
             hide_index=True,
@@ -232,11 +260,11 @@ with team2_col:
     if not team2_players.empty:
         # Use data editor for team2
         edited_team2 = st.data_editor(
-            team2_players[['Selected', 'Name', 'Pos', 'ProjPts']],
+            team2_players[['Selected', 'Name', 'Positions', 'ProjPts']],
             column_config={
                 "Selected": st.column_config.CheckboxColumn("Select", help="Select player for trade"),
                 "Name": st.column_config.TextColumn("Player Name"),
-                "Pos": st.column_config.TextColumn("Position"),
+                "Positions": st.column_config.TextColumn("Position"),
                 "ProjPts": st.column_config.NumberColumn("Projected Points", format="%.1f")
             },
             hide_index=True,
@@ -266,7 +294,7 @@ with col1:
         # Get data for selected players
         team1_players_giving = data['combined'][data['combined']['Name'].isin(st.session_state.selected_players_team1)]
         st.dataframe(
-            team1_players_giving[['Name', 'Pos', 'ProjPts']],
+            team1_players_giving[['Name', 'Positions', 'ProjPts']],
             hide_index=True,
             use_container_width=True
         )
@@ -281,7 +309,7 @@ with col2:
         # Get data for selected players
         team2_players_giving = data['combined'][data['combined']['Name'].isin(st.session_state.selected_players_team2)]
         st.dataframe(
-            team2_players_giving[['Name', 'Pos', 'ProjPts']],
+            team2_players_giving[['Name', 'Positions', 'ProjPts']],
             hide_index=True,
             use_container_width=True
         )
