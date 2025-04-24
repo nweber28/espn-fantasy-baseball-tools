@@ -26,7 +26,7 @@ class ESPNService:
         Returns:
             Dictionary of player data or None if request fails
         """
-        url = f"{ESPNService.BASE_URL}/seasons/{season_id}/players?scoringPeriodId=0&view=players_wl"
+        url = f"{ESPNService.BASE_URL}/seasons/{season_id}/players?scoringPeriodId=0&view=players_wl&view=kona_player_info"
         
         headers = {
             "X-Fantasy-Filter": '{"filterActive":{"value":true}}',
