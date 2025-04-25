@@ -6,6 +6,8 @@ A Streamlit application for fantasy baseball analysis, providing tools for pitch
 
 - **Pitcher Streaming**: Analyze pitcher matchups and find the best streaming options
 - **Waiver Wire Analyzer**: Identify valuable players available on the waiver wire
+- **Trade Evaluator**: Evaluate potential trades and their impact on your team
+- **Player Search**: Search for players and view their projections
 
 ## Installation
 
@@ -24,14 +26,14 @@ pip install -r requirements.txt
 
 3. Run the application:
 ```bash
-streamlit run Home.py
+streamlit run 🏠_Home.py
 ```
 
 ## Project Structure
 
 ```
 fantasy-baseball-2025/
-├── Home.py                      # Main entry point
+├── 🏠_Home.py                   # Main entry point
 ├── config/                      # Configuration files
 │   ├── constants.py             # All constants and mappings
 │   └── settings.py              # App settings and configuration
@@ -44,10 +46,14 @@ fantasy-baseball-2025/
 ├── utils/                       # Utility functions
 │   ├── data_processing.py       # Data transformation functions
 │   ├── name_utils.py            # Player name standardization
+│   ├── roster_utils.py          # Roster optimization utilities
+│   ├── waiver_utils.py          # Waiver wire analysis utilities
 │   └── logging_utils.py         # Logging configuration
 └── pages/                       # Streamlit pages
-    ├── 🚰_Pitcher_Streaming.py  # Pitcher streaming analysis
-    └── 📈_Waiver_Wire_Analyzer.py # Waiver wire analysis
+    ├── 1_🔍_Player_Search.py    # Player search and analysis
+    ├── 2_🔄_Trade_Evaluator.py  # Trade evaluation tool
+    ├── 3_📈_Waiver_Wire_Analyzer.py # Waiver wire analysis
+    └── 4_🚰_Pitcher_Streaming.py # Pitcher streaming analysis
 ```
 
 ## Usage
@@ -56,15 +62,29 @@ fantasy-baseball-2025/
 2. Navigate between different analysis pages using the sidebar
 3. Use the Pitcher Streaming page to find the best pitching matchups
 4. Use the Waiver Wire Analyzer to find valuable free agents
+5. Use the Trade Evaluator to analyze potential trades
+6. Use the Player Search to find and compare players
+
+## Performance Optimizations
+
+The application includes several performance optimizations:
+
+- **Vectorized operations** for faster data processing
+- **Parallel data fetching** using ThreadPoolExecutor
+- **Memory optimization** with appropriate data types
+- **Cached name stemming** to avoid redundant calculations
+- **Pre-computed lookups** for faster player matching
 
 ## Dependencies
 
 - streamlit
 - pandas
+- numpy
 - requests
 - nltk
 - unidecode
 - pytz
+- concurrent.futures
 
 ## License
 

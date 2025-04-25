@@ -5,13 +5,15 @@ This page helps users evaluate potential fantasy baseball trades.
 """
 import streamlit as st
 import pandas as pd
+import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
+import concurrent.futures
 
 # Import from our modules
 from utils.logging_utils import setup_logging
-from utils.data_processing import convert_positions, process_team_rosters, process_fangraphs_data
+from utils.data_processing import convert_positions, process_team_rosters, process_fangraphs_data, cached_stem_name
 from utils.name_utils import stem_name
-from utils.roster_utils import optimize_roster, roster_to_dataframe, identify_roster_changes, prepare_players_for_optimization
+from utils.roster_utils import optimize_roster, roster_to_dataframe, identify_roster_changes, prepare_players_for_optimization, optimize_dataframe_memory
 from services.espn_service import ESPNService
 from services.fangraphs_service import FanGraphsService
 from config.settings import DEFAULT_LEAGUE_ID, DEFAULT_ROSTER_SLOTS
@@ -47,18 +49,25 @@ if 'selected_players_team2' not in st.session_state:
 # --- Data Loading Functions ---
 @st.cache_data(ttl=3600)
 def load_player_data(league_id: str):
-    """Load player data from FanGraphs and ESPN."""
+    """Load player data from FanGraphs and ESPN using parallel processing."""
     with st.spinner("Loading player data..."):
-        # Get batter projections
-        batter_data = FanGraphsService.fetch_projections('batter', for_streamer_analysis=False)
+        import concurrent.futures
+        
+        # Use ThreadPoolExecutor to fetch data in parallel
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            # Start all fetch operations concurrently
+            batter_future = executor.submit(FanGraphsService.fetch_projections, 'batter', False)
+            pitcher_future = executor.submit(FanGraphsService.fetch_projections, 'pitcher')
+            espn_future = executor.submit(ESPNService.fetch_player_data)
+            
+            # Get results as they complete
+            batter_data = batter_future.result()
+            pitcher_data = pitcher_future.result()
+            espn_data = espn_future.result()
+        
+        # Process data using vectorized operations
         batter_df = process_fangraphs_data(batter_data, 'batter')
-        
-        # Get pitcher projections
-        pitcher_data = FanGraphsService.fetch_projections('pitcher')
         pitcher_df = process_fangraphs_data(pitcher_data, 'pitcher')
-        
-        # Get ESPN player data
-        espn_data = ESPNService.fetch_player_data()
         
         # Process roster data using the same approach as Waiver Wire Analyzer
         rostered_players = {}
@@ -100,21 +109,36 @@ def load_player_data(league_id: str):
         # Create a combined player database with position eligibility
         combined_players = []
         
-        # Process batters
+        # Pre-compute a dictionary for faster lookups
+        espn_player_dict = {}
+        if espn_df is not None and 'stemmed_name' in espn_df.columns:
+            for _, player in espn_df.iterrows():
+                espn_player_dict[player['stemmed_name']] = player
+        
+        # Process batters using vectorized operations where possible
         for _, batter in batter_df.iterrows():
-            # Get ESPN position eligibility if available
+            # Get ESPN position eligibility and injury status if available
             espn_positions = ""
-            if espn_df is not None and 'stemmed_name' in espn_df.columns:
-                matching_players = espn_df[espn_df['stemmed_name'] == batter['StemmedName']]
-                if not matching_players.empty:
-                    player_id = matching_players['id'].iloc[0]
-                    if player_id in player_team_map:
-                        # Use the positions from the team roster data (ESPN positions)
-                        team_id = player_team_map[player_id]['team_id']
-                        for player in team_rosters[team_id]['players']:
-                            if player['id'] == player_id:
-                                espn_positions = player['positions']
-                                break
+            injury_status = None
+            
+            # Use dictionary lookup instead of dataframe filtering
+            player_info = espn_player_dict.get(batter['StemmedName'])
+            if player_info is not None:
+                player_id = player_info['id']
+                # Safely get injury status with error handling
+                try:
+                    injury_status = player_info.get('injuryStatus')
+                except Exception as e:
+                    logger.warning(f"Error getting injury status for {batter['Name']}: {e}")
+                    injury_status = None
+                
+                if player_id in player_team_map:
+                    # Use the positions from the team roster data (ESPN positions)
+                    team_id = player_team_map[player_id]['team_id']
+                    for player in team_rosters[team_id]['players']:
+                        if player['id'] == player_id:
+                            espn_positions = player['positions']
+                            break
             
             player_info = {
                 'Name': batter['Name'],
@@ -124,25 +148,35 @@ def load_player_data(league_id: str):
                 'ProjPts': batter['ProjPts'],
                 'PlayerType': 'Batter',
                 'Team Owner': rostered_players.get(batter['StemmedName'], {}).get('team_name', None),
-                'Positions': espn_positions or rostered_players.get(batter['StemmedName'], {}).get('positions', '')
+                'Positions': espn_positions or rostered_players.get(batter['StemmedName'], {}).get('positions', ''),
+                'Injury Status': injury_status
             }
             combined_players.append(player_info)
         
-        # Process pitchers
+        # Process pitchers using the same approach
         for _, pitcher in pitcher_df.iterrows():
-            # Get ESPN position eligibility if available
+            # Get ESPN position eligibility and injury status if available
             espn_positions = ""
-            if espn_df is not None and 'stemmed_name' in espn_df.columns:
-                matching_players = espn_df[espn_df['stemmed_name'] == pitcher['StemmedName']]
-                if not matching_players.empty:
-                    player_id = matching_players['id'].iloc[0]
-                    if player_id in player_team_map:
-                        # Use the positions from the team roster data (ESPN positions)
-                        team_id = player_team_map[player_id]['team_id']
-                        for player in team_rosters[team_id]['players']:
-                            if player['id'] == player_id:
-                                espn_positions = player['positions']
-                                break
+            injury_status = None
+            
+            # Use dictionary lookup instead of dataframe filtering
+            player_info = espn_player_dict.get(pitcher['StemmedName'])
+            if player_info is not None:
+                player_id = player_info['id']
+                # Safely get injury status with error handling
+                try:
+                    injury_status = player_info.get('injuryStatus')
+                except Exception as e:
+                    logger.warning(f"Error getting injury status for {pitcher['Name']}: {e}")
+                    injury_status = None
+                
+                if player_id in player_team_map:
+                    # Use the positions from the team roster data (ESPN positions)
+                    team_id = player_team_map[player_id]['team_id']
+                    for player in team_rosters[team_id]['players']:
+                        if player['id'] == player_id:
+                            espn_positions = player['positions']
+                            break
             
             player_info = {
                 'Name': pitcher['Name'],
@@ -152,7 +186,8 @@ def load_player_data(league_id: str):
                 'ProjPts': pitcher['ProjPts'],
                 'PlayerType': 'Pitcher',
                 'Team Owner': rostered_players.get(pitcher['StemmedName'], {}).get('team_name', None),
-                'Positions': espn_positions or rostered_players.get(pitcher['StemmedName'], {}).get('positions', '')
+                'Positions': espn_positions or rostered_players.get(pitcher['StemmedName'], {}).get('positions', ''),
+                'Injury Status': injury_status
             }
             combined_players.append(player_info)
         
@@ -217,12 +252,13 @@ with team1_col:
     if not team1_players.empty:
         # Use data editor for team1
         edited_team1 = st.data_editor(
-            team1_players[['Selected', 'Name', 'Positions', 'ProjPts']],
+            team1_players[['Selected', 'Name', 'Positions', 'ProjPts', 'Injury Status']],
             column_config={
                 "Selected": st.column_config.CheckboxColumn("Select", help="Select player for trade"),
                 "Name": st.column_config.TextColumn("Player Name"),
                 "Positions": st.column_config.TextColumn("Position"),
-                "ProjPts": st.column_config.NumberColumn("Projected Points", format="%.1f")
+                "ProjPts": st.column_config.NumberColumn("Projected Points", format="%.1f"),
+                "Injury Status": st.column_config.TextColumn("Status")
             },
             hide_index=True,
             use_container_width=True,
@@ -260,12 +296,13 @@ with team2_col:
     if not team2_players.empty:
         # Use data editor for team2
         edited_team2 = st.data_editor(
-            team2_players[['Selected', 'Name', 'Positions', 'ProjPts']],
+            team2_players[['Selected', 'Name', 'Positions', 'ProjPts', 'Injury Status']],
             column_config={
                 "Selected": st.column_config.CheckboxColumn("Select", help="Select player for trade"),
                 "Name": st.column_config.TextColumn("Player Name"),
                 "Positions": st.column_config.TextColumn("Position"),
-                "ProjPts": st.column_config.NumberColumn("Projected Points", format="%.1f")
+                "ProjPts": st.column_config.NumberColumn("Projected Points", format="%.1f"),
+                "Injury Status": st.column_config.TextColumn("Status")
             },
             hide_index=True,
             use_container_width=True,
@@ -294,9 +331,15 @@ with col1:
         # Get data for selected players
         team1_players_giving = data['combined'][data['combined']['Name'].isin(st.session_state.selected_players_team1)]
         st.dataframe(
-            team1_players_giving[['Name', 'Positions', 'ProjPts']],
+            team1_players_giving[['Name', 'Positions', 'ProjPts', 'Injury Status']],
             hide_index=True,
-            use_container_width=True
+            use_container_width=True,
+            column_config={
+                "Name": st.column_config.TextColumn("Player Name"),
+                "Positions": st.column_config.TextColumn("Position"),
+                "ProjPts": st.column_config.NumberColumn("Projected Points", format="%.1f"),
+                "Injury Status": st.column_config.TextColumn("Status")
+            }
         )
         team1_giving_total = team1_players_giving['ProjPts'].sum()
         st.metric("Total Points", f"{team1_giving_total:.1f}")
@@ -309,9 +352,15 @@ with col2:
         # Get data for selected players
         team2_players_giving = data['combined'][data['combined']['Name'].isin(st.session_state.selected_players_team2)]
         st.dataframe(
-            team2_players_giving[['Name', 'Positions', 'ProjPts']],
+            team2_players_giving[['Name', 'Positions', 'ProjPts', 'Injury Status']],
             hide_index=True,
-            use_container_width=True
+            use_container_width=True,
+            column_config={
+                "Name": st.column_config.TextColumn("Player Name"),
+                "Positions": st.column_config.TextColumn("Position"),
+                "ProjPts": st.column_config.NumberColumn("Projected Points", format="%.1f"),
+                "Injury Status": st.column_config.TextColumn("Status")
+            }
         )
         team2_giving_total = team2_players_giving['ProjPts'].sum()
         st.metric("Total Points", f"{team2_giving_total:.1f}")
@@ -339,6 +388,7 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
     
     free_agents_df['Eligible Positions'] = free_agents_df['Positions']
     free_agents_df['Projected Points'] = free_agents_df['ProjPts']
+    free_agents_df['Projected Points'] = free_agents_df['ProjPts']
     
     # Process free agents for optimization
     from utils.waiver_utils import analyze_post_trade_waiver_options
@@ -359,7 +409,8 @@ if st.session_state.selected_players_team1 and st.session_state.selected_players
             'projected_points': player['Projected Points'] if not pd.isna(player['Projected Points']) else 0,
             'is_pitcher': is_pitcher,
             'is_hitter': is_hitter,
-            'percent_owned': player.get('Percent Owned', 0)
+            'percent_owned': player.get('Percent Owned', 0),
+            'injury_status': player.get('Injury Status')
         })
     
     # Prepare current rosters

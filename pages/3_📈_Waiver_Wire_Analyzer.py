@@ -5,14 +5,16 @@ This page helps users identify valuable players available on the waiver wire.
 """
 import streamlit as st
 import pandas as pd
+import numpy as np
 import json
+import concurrent.futures
 from typing import Dict, Any, List, Optional, Tuple
 
 # Import from our modules
 from utils.logging_utils import setup_logging
-from utils.data_processing import convert_positions, process_team_rosters, process_fangraphs_data
+from utils.data_processing import convert_positions, process_team_rosters, process_fangraphs_data, cached_stem_name
 from utils.name_utils import stem_name
-from utils.roster_utils import optimize_roster
+from utils.roster_utils import optimize_roster, optimize_dataframe_memory
 from utils.waiver_utils import find_waiver_replacements
 from services.espn_service import ESPNService
 from services.fangraphs_service import FanGraphsService
@@ -43,23 +45,39 @@ with st.sidebar:
 
 # Fetch all data
 with st.spinner("Fetching player data..."):
-    espn_data = ESPNService.fetch_player_data()
-    fg_batters_data = FanGraphsService.fetch_projections('batter')
-    fg_pitchers_data = FanGraphsService.fetch_projections('pitcher')
+    # Use ThreadPoolExecutor to fetch data in parallel
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        # Start all fetch operations concurrently
+        espn_future = executor.submit(ESPNService.fetch_player_data)
+        fg_batters_future = executor.submit(FanGraphsService.fetch_projections, 'batter')
+        fg_pitchers_future = executor.submit(FanGraphsService.fetch_projections, 'pitcher')
+        
+        # Get results as they complete
+        espn_data = espn_future.result()
+        fg_batters_data = fg_batters_future.result()
+        fg_pitchers_data = fg_pitchers_future.result()
 
 if espn_data:
     # Process ESPN data
     espn_df = pd.DataFrame(espn_data)
     logger.info(f"Created ESPN dataframe with {len(espn_df)} rows and {len(espn_df.columns)} columns")
     
-    # Extract percentOwned from the ownership dictionary
-    espn_df['percent_owned'] = espn_df['ownership'].apply(lambda x: x.get('percentOwned', 0) if isinstance(x, dict) else 0)
-    espn_df = espn_df.drop('ownership', axis=1)
+    # Extract percentOwned from the ownership dictionary using vectorized operations
+    if 'ownership' in espn_df.columns:
+        # Create a function to safely extract percentOwned
+        def extract_percent_owned(ownership):
+            if isinstance(ownership, dict):
+                return ownership.get('percentOwned', 0)
+            return 0
+        
+        # Apply the function to the entire column at once
+        espn_df['percent_owned'] = espn_df['ownership'].apply(extract_percent_owned)
+        espn_df = espn_df.drop('ownership', axis=1)
     
-    # Add stemmed names to ESPN data for matching
-    espn_df['stemmed_name'] = espn_df['fullName'].apply(stem_name)
+    # Add stemmed names to ESPN data for matching using cached version
+    espn_df['stemmed_name'] = espn_df['fullName'].apply(cached_stem_name)
     
-    # Process FanGraphs data
+    # Process FanGraphs data using vectorized operations
     fg_pitchers_df = process_fangraphs_data(fg_pitchers_data, 'pitcher')
     fg_batters_df = process_fangraphs_data(fg_batters_data, 'batter')
     
@@ -67,12 +85,19 @@ if espn_data:
     fg_combined_df = pd.concat([fg_pitchers_df, fg_batters_df], ignore_index=True)
     logger.info(f"Combined FanGraphs data: {len(fg_combined_df)} players")
     
-    # Create a mapping from stemmed name to projection points
+    # Create a mapping from stemmed name to projection points using vectorized operations
     proj_pts_map = dict(zip(fg_combined_df['StemmedName'], fg_combined_df['ProjPts']))
     logger.info(f"Created projection points mapping for {len(proj_pts_map)} players")
     
-    # Add projection points to ESPN data
+    # Add projection points to ESPN data using vectorized mapping
     espn_df['projPts'] = espn_df['stemmed_name'].map(proj_pts_map)
+    
+    # Optimize memory usage - but only for columns that are safe
+    try:
+        espn_df = optimize_dataframe_memory(espn_df)
+    except Exception as e:
+        logger.warning(f"Error optimizing dataframe memory: {e}")
+        # Continue without optimization if it fails
     
     # Fetch team roster data if league ID is provided
     team_rosters = {}
@@ -396,7 +421,7 @@ if espn_data:
                 "Projected Points": st.column_config.NumberColumn("Proj. Points", format="%.1f"),
             }
         )
-        st.write(f"*\*Showing {len(free_agents_df)} free agents with at least 0.05% ownership*")
+        st.write(f"*Showing {len(free_agents_df)} free agents with at least 0.05% ownership*")
     else:
         st.info("No free agents found. Check your league ID and make sure rosters are properly loaded.")
     

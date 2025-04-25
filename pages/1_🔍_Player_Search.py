@@ -114,8 +114,6 @@ def load_player_data():
         # Add team information to ESPN data
         espn_df['team_id'] = espn_df['id'].map(lambda x: player_team_map.get(x, {}).get('team_id', None))
         espn_df['team_name'] = espn_df['id'].map(lambda x: player_team_map.get(x, {}).get('team_abbrev', None))
-        
-        print(espn_df)
 
         # Create simplified DataFrame with only the essential columns
         simplified_df = pd.DataFrame({
@@ -145,7 +143,7 @@ if player_df is not None:
     st.header("Search Players")
     
     # Create search filters
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     
     with col1:
         search_name = st.text_input("Player Name", "")
@@ -158,9 +156,15 @@ if player_df is not None:
     with col3:
         team_options = ["All"] + sorted(player_df['Team'].dropna().unique().tolist())
         search_team = st.selectbox("Team", team_options)
+        
+    with col4:
+        min_ownership = st.slider("Min. Ownership %", min_value=0.0, max_value=100.0, value=5.0, step=5.0)
     
     # Filter the data based on search criteria
     filtered_df = player_df.copy()
+    
+    # Filter out players with less than the specified ownership percentage
+    filtered_df = filtered_df[filtered_df['Percent Owned'] >= min_ownership]
     
     if search_name:
         filtered_df = filtered_df[filtered_df['Name'].str.contains(search_name, case=False)]
@@ -170,8 +174,6 @@ if player_df is not None:
     
     if search_team != "All":
         filtered_df = filtered_df[filtered_df['Team'] == search_team]
-    
-    print(filtered_df)
 
     # Display the filtered data
     st.dataframe(
@@ -189,7 +191,7 @@ if player_df is not None:
     )
     
     # Show number of results
-    st.write(f"Found {len(filtered_df)} players matching your search criteria.")
+    st.write(f"Found {len(filtered_df)} players matching your search criteria (minimum {min_ownership}% ownership).")
     
     # Show debug info if enabled
     if show_debug:
