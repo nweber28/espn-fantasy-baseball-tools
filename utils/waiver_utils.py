@@ -21,7 +21,7 @@ def find_waiver_replacements_vectorized(
         processed_free_agents: List of processed free agents
         
     Returns:
-        List of recommended pickups
+        List of recommended pickups for both starters and bench players
     """
     # Convert to dataframes for vectorized operations
     original_df = pd.DataFrame([
@@ -41,23 +41,31 @@ def find_waiver_replacements_vectorized(
     # Create free agent dataframe
     fa_df = pd.DataFrame(processed_free_agents)
     
+    # Create a roster dataframe for easier processing
+    roster_df = pd.DataFrame(processed_roster)
+    
     # Get original and new starters using dataframe operations
     original_starters = set(original_df[~original_df['is_bench_or_il']]['name'])
     new_starters = set(combined_df[~combined_df['is_bench_or_il']]['name'])
     
-    # Create a lookup for new starter details
+    # Get original and new bench players
+    original_bench = set(original_df[original_df['position'] == 'BN']['name'])
+    new_bench = set(combined_df[combined_df['position'] == 'BN']['name'])
+    
+    # Create lookups for player details
     new_starter_details = combined_df[~combined_df['is_bench_or_il']].set_index('name').to_dict('index')
+    new_bench_details = combined_df[combined_df['position'] == 'BN'].set_index('name').to_dict('index') if not combined_df[combined_df['position'] == 'BN'].empty else {}
     
-    # Find free agents who made it into starting lineup
+    # Find free agents who made it into starting lineup or bench
     fa_names = set(fa_df['name'])
-    recommended_free_agents = list(new_starters.intersection(fa_names))
-    
-    # Create a roster dataframe for easier processing
-    roster_df = pd.DataFrame(processed_roster)
+    recommended_starter_fas = list(new_starters.intersection(fa_names))
+    recommended_bench_fas = list(new_bench.intersection(fa_names))
     
     # Create recommendations with details
     recommended_pickups = []
-    for fa_name in recommended_free_agents:
+    
+    # Process starter recommendations
+    for fa_name in recommended_starter_fas:
         # Find the free agent in the processed free agents list
         fa = fa_df[fa_df['name'] == fa_name].iloc[0].to_dict() if not fa_df[fa_df['name'] == fa_name].empty else None
         
@@ -92,6 +100,49 @@ def find_waiver_replacements_vectorized(
                 improvement = fa['projected_points'] - replaced_player['projected_points']
                 
                 if improvement > 0:
+                    recommended_pickups.append({
+                        'Add': fa_name,
+                        'Position': position,
+                        'Drop': replaced_player['name'],
+                        'Proj. Points Improvement': improvement,
+                        'FA Percent Owned': fa.get('percent_owned', 0),
+                        'Injury Status': fa.get('injury_status', '')
+                    })
+    
+    # Process bench recommendations
+    for fa_name in recommended_bench_fas:
+        # Skip if this FA is already recommended as a starter
+        if fa_name in recommended_starter_fas:
+            continue
+            
+        # Find the free agent in the processed free agents list
+        fa = fa_df[fa_df['name'] == fa_name].iloc[0].to_dict() if not fa_df[fa_df['name'] == fa_name].empty else None
+        
+        if fa:
+            # Create a mask for potential bench replacements
+            # Skip players who are IL-eligible
+            il_eligible_mask = ~roster_df['injury_status'].isin(["TEN_DAY_DL", "SUSPENSION", "SIXTY_DAY_DL", "OUT", "FIFTEEN_DAY_DL"])
+            # Players not in new starters or new bench (except the ones we're replacing)
+            not_in_new_roster = ~roster_df['name'].isin(new_starters.union(new_bench))
+            
+            # Combine conditions
+            potential_replacements_mask = il_eligible_mask & not_in_new_roster
+            potential_replacements = roster_df[potential_replacements_mask].sort_values('projected_points', ascending=False)
+            
+            # If we found potential replacements
+            if not potential_replacements.empty:
+                replaced_player = potential_replacements.iloc[0]
+                
+                # Calculate projected points improvement
+                improvement = fa['projected_points'] - replaced_player['projected_points']
+                
+                if improvement > 0:
+                    # Determine position based on player type
+                    if fa.get('is_pitcher', False):
+                        position = "P (Bench)"
+                    else:
+                        position = "Bench"
+                        
                     recommended_pickups.append({
                         'Add': fa_name,
                         'Position': position,

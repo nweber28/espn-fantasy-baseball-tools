@@ -97,6 +97,11 @@ def optimize_roster(players: List[Dict[str, Any]], slots: Dict[str, int]) -> Tup
     # Extract the solution
     assignments = {position: [] for position in slots.keys()}
     assignments["IL"] = []  # Add IL list
+    
+    # Always ensure BN key exists in assignments
+    if "BN" not in assignments:
+        assignments["BN"] = []
+        
     total_points = 0
     
     # First add IL players
@@ -115,6 +120,9 @@ def optimize_roster(players: List[Dict[str, Any]], slots: Dict[str, int]) -> Tup
         
         # Check if player is assigned to bench
         if not assigned and bench_vars[i].value() > 0.5:
+            assignments["BN"].append(player)
+        # If player is not assigned anywhere and we have remaining bench spots, add to bench
+        elif not assigned and len(assignments["BN"]) < bench_limit:
             assignments["BN"].append(player)
     
     # Sort players within each position by projected points (highest first)
