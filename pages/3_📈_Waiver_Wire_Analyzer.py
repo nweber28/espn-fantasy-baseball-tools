@@ -35,12 +35,24 @@ st.set_page_config(
 # Title
 st.title("📈 Waiver Wire Analyzer")
 
-# Add league ID input in the sidebar
+# Get league ID and team from session state or use defaults
+if 'league_id' in st.session_state:
+    league_id = st.session_state.league_id
+else:
+    league_id = DEFAULT_LEAGUE_ID
+
+my_team_id = st.session_state.get('my_team_id')
+my_team_name = st.session_state.get('my_team_name')
+
+# Show current settings and add debug toggle in sidebar
 with st.sidebar:
-    st.header("ESPN Fantasy Settings")
-    league_id = st.text_input("League ID", value=DEFAULT_LEAGUE_ID, help="Enter your ESPN Fantasy Baseball League ID")
-    
-    # Add debug toggle
+    st.header("Current Settings")
+    st.write(f"**League ID:** {league_id}")
+    if my_team_name:
+        st.write(f"**Your Team:** {my_team_name.split(' (')[0]}")
+    else:
+        st.write("**Your Team:** Not selected")
+    st.header("Debug Options")
     show_debug = st.checkbox("Show Debug Info", value=False, help="Show debug information in the UI")
 
 # Fetch all data

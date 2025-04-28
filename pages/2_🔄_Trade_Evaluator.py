@@ -36,8 +36,24 @@ Compare player values, projections, and see who comes out ahead in the deal.
 """)
 
 # --- Sidebar ---
+# Get league ID and team from session state or use defaults
+if 'league_id' in st.session_state:
+    league_id = st.session_state.league_id
+else:
+    league_id = DEFAULT_LEAGUE_ID
+
+my_team_id = st.session_state.get('my_team_id')
+my_team_name = st.session_state.get('my_team_name')
+
+# Show current settings in the sidebar
+st.sidebar.header("Current Settings")
+st.sidebar.write(f"**League ID:** {league_id}")
+if my_team_name:
+    st.sidebar.write(f"**Your Team:** {my_team_name.split(' (')[0]}")
+else:
+    st.sidebar.write("**Your Team:** Not selected")
+
 st.sidebar.header("Trade Settings")
-league_id = st.sidebar.text_input("League ID", value=DEFAULT_LEAGUE_ID)
 show_detailed_rosters = st.sidebar.checkbox("Show Detailed Roster Analysis", value=True)
 
 # Initialize session state for selected players if it doesn't exist

@@ -175,10 +175,26 @@ def process_schedule(schedule: Dict[str, Any], pitchers: pd.DataFrame, batting: 
 st.title("Pitcher Streaming Analysis")
 st.markdown("This page helps you analyze pitchers for fantasy baseball using ATC Rest-Of-Season projections.")
 
-# Add league ID input in the sidebar
+# Get league ID and team from session state or use defaults
+if 'league_id' in st.session_state:
+    league_id = st.session_state.league_id
+else:
+    league_id = DEFAULT_LEAGUE_ID
+
+my_team_id = st.session_state.get('my_team_id')
+my_team_name = st.session_state.get('my_team_name')
+
+# Add options in the sidebar
 with st.sidebar:
-    st.header("ESPN Fantasy Settings")
-    league_id = st.text_input("League ID", value=DEFAULT_LEAGUE_ID, help="Enter your ESPN Fantasy Baseball League ID")
+    # Show current settings
+    st.header("Current Settings")
+    st.write(f"**League ID:** {league_id}")
+    if my_team_name:
+        st.write(f"**Your Team:** {my_team_name.split(' (')[0]}")
+    else:
+        st.write("**Your Team:** Not selected")
+        
+    st.header("Streaming Options")
     show_all = st.checkbox("Show All Pitchers", value=False, help="Show all pitchers including those on rosters")
     
     if league_id:
