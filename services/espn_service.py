@@ -16,7 +16,7 @@ class ESPNService:
     
     @staticmethod
     @st.cache_data(ttl=3600)
-    def fetch_player_data(season_id: int = 2025) -> Optional[Dict[str, Any]]:
+    def fetch_player_data(cookies: dict, season_id: int = 2025) -> Optional[Dict[str, Any]]:
         """
         Fetch all player data from ESPN.
         
@@ -42,7 +42,7 @@ class ESPNService:
         
         try:
             logger.info("Fetching ESPN player data")
-            response = requests.get(url, headers=headers)
+            response = requests.get(url, headers=headers, cookies=cookies)
             response.raise_for_status()
             data = response.json()
             logger.info(f"Successfully fetched ESPN player data: {len(data)} players")
@@ -53,7 +53,7 @@ class ESPNService:
     
     @staticmethod
     @st.cache_data(ttl=3600)
-    def fetch_teams_data(league_id: str, season_id: int = 2025) -> Optional[Dict[str, Any]]:
+    def fetch_teams_data(league_id: str, cookies: dict, season_id: int = 2025) -> Optional[Dict[str, Any]]:
         """
         Fetch teams data for a specific league.
         
@@ -79,7 +79,7 @@ class ESPNService:
         
         try:
             logger.info(f"Fetching ESPN teams data for league {league_id}")
-            response = requests.get(url, headers=headers)
+            response = requests.get(url, headers=headers, cookies=cookies)
             response.raise_for_status()
             data = response.json()
             logger.info(f"Successfully fetched ESPN teams data: {len(data.get('teams', []))} teams")
@@ -90,7 +90,7 @@ class ESPNService:
     
     @staticmethod
     @st.cache_data(ttl=3600)
-    def fetch_team_rosters(league_id: str, season_id: int = 2025) -> Optional[Dict[str, Any]]:
+    def fetch_team_rosters(league_id: str, cookies: dict, season_id: int = 2025) -> Optional[Dict[str, Any]]:
         """
         Fetch team rosters for a specific league.
         
@@ -116,7 +116,7 @@ class ESPNService:
         
         try:
             logger.info(f"Fetching ESPN team rosters for league {league_id}")
-            response = requests.get(url, headers=headers)
+            response = requests.get(url, headers=headers, cookies=cookies)
             response.raise_for_status()
             data = response.json()
             

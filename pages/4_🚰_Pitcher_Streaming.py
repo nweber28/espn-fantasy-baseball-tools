@@ -18,7 +18,7 @@ from services.espn_service import ESPNService
 from services.fangraphs_service import FanGraphsService
 from services.mlb_service import MLBService
 from config.constants import AVG_STARTER_IP, AVG_PA_PER_INNING, DEFAULT_PITCHER_PTS, TEAM_IDS
-from config.settings import EST, DEFAULT_LEAGUE_ID
+from config.settings import EST, DEFAULT_LEAGUE_ID, cookies
 
 # Setup logging
 logger = setup_logging()
@@ -200,7 +200,7 @@ with st.sidebar:
     if league_id:
         with st.spinner("Loading league data..."):
             # First fetch ESPN player data
-            espn_data = ESPNService.fetch_player_data()
+            espn_data = ESPNService.fetch_player_data(cookies)
             rostered_pitcher_names = []
             
             if espn_data:
@@ -211,8 +211,8 @@ with st.sidebar:
                 espn_df['stemmed_name'] = espn_df['fullName'].apply(stem_name)
                 
                 # Get teams and rosters
-                teams_data = ESPNService.fetch_teams_data(league_id)
-                roster_data = ESPNService.fetch_team_rosters(league_id)
+                teams_data = ESPNService.fetch_teams_data(league_id, cookies)
+                roster_data = ESPNService.fetch_team_rosters(league_id, cookies)
                 
                 if teams_data and roster_data:
                     team_rosters, player_team_map = process_team_rosters(roster_data, teams_data, espn_df)

@@ -13,7 +13,7 @@ from utils.data_processing import convert_positions, process_team_rosters, proce
 from utils.name_utils import stem_name
 from services.espn_service import ESPNService
 from services.fangraphs_service import FanGraphsService
-from config.settings import DEFAULT_LEAGUE_ID
+from config.settings import DEFAULT_LEAGUE_ID, cookies
 
 # Setup logging
 logger = setup_logging()
@@ -51,11 +51,11 @@ with st.sidebar:
 
 # Function to load player data
 @st.cache_data(ttl=3600)
-def load_player_data():
+def load_player_data(cookies: dict):
     """Load and process player data from ESPN and FanGraphs."""
     with st.spinner("Loading player data..."):
         # Fetch data from ESPN
-        espn_data = ESPNService.fetch_player_data()
+        espn_data = ESPNService.fetch_player_data(cookies)
         
         # Fetch projections from FanGraphs
         fg_batters_data = FanGraphsService.fetch_projections('batter')
@@ -102,7 +102,7 @@ def load_player_data():
                 logger.info(f"Fetching rosters for league ID: {league_id}")
                 
                 # First fetch the teams data
-                teams_data = ESPNService.fetch_teams_data(league_id)
+                teams_data = ESPNService.fetch_teams_data(league_id, cookies)
                 if not teams_data:
                     st.warning("Failed to fetch teams data. Check your league ID and try again.")
                     logger.error("Failed to fetch teams data")
@@ -110,7 +110,7 @@ def load_player_data():
                     logger.info(f"Successfully fetched teams data with {len(teams_data.get('teams', []))} teams")
                     
                     # Then fetch the team rosters
-                    roster_data = ESPNService.fetch_team_rosters(league_id)
+                    roster_data = ESPNService.fetch_team_rosters(league_id, cookies)
                     
                     if roster_data:
                         team_rosters, player_team_map = process_team_rosters(roster_data, teams_data, espn_df)
@@ -149,7 +149,7 @@ def load_player_data():
         return simplified_df
 
 # Load player data
-player_df = load_player_data()
+player_df = load_player_data(cookies)
 
 if player_df is not None:
     # Add search functionality

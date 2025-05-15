@@ -16,7 +16,7 @@ from utils.name_utils import stem_name
 from utils.roster_utils import optimize_roster, roster_to_dataframe, identify_roster_changes, prepare_players_for_optimization, optimize_dataframe_memory
 from services.espn_service import ESPNService
 from services.fangraphs_service import FanGraphsService
-from config.settings import DEFAULT_LEAGUE_ID, DEFAULT_ROSTER_SLOTS
+from config.settings import DEFAULT_LEAGUE_ID, DEFAULT_ROSTER_SLOTS, cookies
 
 # Setup logging
 logger = setup_logging()
@@ -74,7 +74,7 @@ def load_player_data(league_id: str):
             # Start all fetch operations concurrently
             batter_future = executor.submit(FanGraphsService.fetch_projections, 'batter', False)
             pitcher_future = executor.submit(FanGraphsService.fetch_projections, 'pitcher')
-            espn_future = executor.submit(ESPNService.fetch_player_data)
+            espn_future = executor.submit(ESPNService.fetch_player_data, cookies)
             
             # Get results as they complete
             batter_data = batter_future.result()
@@ -99,8 +99,8 @@ def load_player_data(league_id: str):
                 espn_df['stemmed_name'] = espn_df['fullName'].apply(stem_name)
                 
                 # Get teams and rosters
-                teams_data = ESPNService.fetch_teams_data(league_id)
-                roster_data = ESPNService.fetch_team_rosters(league_id)
+                teams_data = ESPNService.fetch_teams_data(league_id, cookies)
+                roster_data = ESPNService.fetch_team_rosters(league_id, cookies)
                 
                 if teams_data and roster_data:
                     team_rosters, player_team_map = process_team_rosters(roster_data, teams_data, espn_df)
