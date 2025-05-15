@@ -75,7 +75,7 @@ logs/
 .env
 config.local.js
 config.local.json
-config.settings.py
+config/settings.py
 
 # Dependency directories
 node_modules/
