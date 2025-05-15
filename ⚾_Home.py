@@ -1,6 +1,6 @@
 import streamlit as st
 from utils.logging_utils import setup_logging
-from config.settings import DEFAULT_LEAGUE_ID
+from config.settings import DEFAULT_LEAGUE_ID, cookies
 from services.espn_service import ESPNService
 
 # Setup logging
@@ -61,7 +61,7 @@ if st.session_state.league_id:
     # Fetch teams data if not already in session state
     if st.session_state.teams_data is None:
         with st.spinner("Fetching teams from your league..."):
-            teams_data = ESPNService.fetch_teams_data(st.session_state.league_id)
+            teams_data = ESPNService.fetch_teams_data(st.session_state.league_id, cookies)
             if teams_data and 'teams' in teams_data:
                 st.session_state.teams_data = teams_data
                 logger.info(f"Successfully fetched {len(teams_data['teams'])} teams")

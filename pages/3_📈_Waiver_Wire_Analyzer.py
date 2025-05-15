@@ -9,6 +9,7 @@ import numpy as np
 import json
 import concurrent.futures
 from typing import Dict, Any, List, Optional, Tuple
+from config.settings import cookies
 
 # Import from our modules
 from utils.logging_utils import setup_logging
@@ -60,7 +61,7 @@ with st.spinner("Fetching player data..."):
     # Use ThreadPoolExecutor to fetch data in parallel
     with concurrent.futures.ThreadPoolExecutor() as executor:
         # Start all fetch operations concurrently
-        espn_future = executor.submit(ESPNService.fetch_player_data)
+        espn_future = executor.submit(ESPNService.fetch_player_data, cookies)
         fg_batters_future = executor.submit(FanGraphsService.fetch_projections, 'batter')
         fg_pitchers_future = executor.submit(FanGraphsService.fetch_projections, 'pitcher')
         
@@ -122,7 +123,7 @@ if espn_data:
             logger.info(f"Fetching rosters for league ID: {league_id}")
             
             # First fetch the teams data
-            teams_data = ESPNService.fetch_teams_data(league_id)
+            teams_data = ESPNService.fetch_teams_data(league_id, cookies)
             if not teams_data:
                 st.error("Failed to fetch teams data. Check your league ID and try again.")
                 logger.error("Failed to fetch teams data")
@@ -130,7 +131,7 @@ if espn_data:
                 logger.info(f"Successfully fetched teams data with {len(teams_data.get('teams', []))} teams")
                 
                 # Then fetch the team rosters
-                roster_data = ESPNService.fetch_team_rosters(league_id)
+                roster_data = ESPNService.fetch_team_rosters(league_id, cookies)
                 
                 if roster_data:
                     # Log some info about the roster data for debugging
